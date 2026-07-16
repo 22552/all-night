@@ -29,3 +29,12 @@ TLS終端・リバースプロキシを使う場合は、ASGIの `scheme` が正
 
 内蔵セッションとアプリケーションのメモリ状態はプロセスローカルです。複数プロセスで共有・整合性が必要なデータは外部ストアに置いてください。
 
+## PyPIリリース
+
+`v*` に一致するタグをpushすると、`Publish to PyPI` Workflowが動きます。PyPI APIトークンは `.env` に書かず、リポジトリのActions Secretとして `PYPI_API_TOKEN` という名前で登録してください。Workflowはwheelとsource distributionをビルドし、`twine check` 後に公開します。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
