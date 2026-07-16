@@ -605,6 +605,24 @@ class Router:
         return self.route(path, methods=("DELETE",), name=name)
 
 
+class Blueprint(Router):
+    """A named, mountable collection of routes and optional setup hook."""
+
+    def __init__(self, name: str, *, url_prefix: str = "", setup: t.Callable | None = None):
+        super().__init__()
+        self.name = name
+        self.url_prefix = ("/" + url_prefix.strip("/")) if url_prefix else ""
+        self.setup = setup
+
+    def register(self, app: "Night", *, url_prefix: str | None = None):
+        prefix = self.url_prefix if url_prefix is None else url_prefix
+        if self.setup is not None:
+            self.setup(self)
+            self.setup = None
+        app.mount(prefix, self)
+        return self
+
+
 class Night(Router):
     def __init__(self, *, debug: bool = False):
         super().__init__()
@@ -640,6 +658,10 @@ class Night(Router):
             raise TypeError("extension must be callable or define init_app(app, **config)")
         self.extensions[key] = extension
         return extension
+
+    def register_blueprint(self, blueprint: Blueprint, *, url_prefix: str | None = None):
+        """Mount a Blueprint and return it for fluent setup code."""
+        return blueprint.register(self, url_prefix=url_prefix)
 
     def lua_macro(
         self,
