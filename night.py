@@ -260,6 +260,8 @@ def _validate_dataclass(model: type, value: t.Any) -> t.Any:
         try:
             if typ is bool and not isinstance(raw, bool):
                 raise ValueError
+            if typ is int and isinstance(raw, bool):
+                raise ValueError
             if typ in (int, float, str, bool) and not isinstance(raw, typ):
                 raw = typ(raw)
             elif dataclasses.is_dataclass(typ):
@@ -1149,7 +1151,7 @@ class Night(Router):
         self.styles: CSSRegistry | None = None
         self._css_cache: str | None = None
         self._static_route_index: dict[str, list[Route]] = {}
-        self._dynamic_route_index: dict[str, list[Route]] = {}
+        self._dynamic_route_index: list[Route] = []
         if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
@@ -1167,9 +1169,11 @@ class Night(Router):
         return TestClient(self)
 
     def _on_route_added(self, route: Route):
-        target = self._static_route_index if "<" not in route.raw_path else self._dynamic_route_index
         key = route.raw_path.rstrip("/") or "/"
-        target.setdefault(key, []).append(route)
+        if "<" in route.raw_path:
+            self._dynamic_route_index.append(route)
+        else:
+            self._static_route_index.setdefault(key, []).append(route)
 
     def enable_css(self, *, minify: bool = False):
         self.css_minify = minify
@@ -1403,9 +1407,7 @@ class Night(Router):
         key = path.rstrip("/") or "/"
         candidates = self._static_route_index.get(key)
         if candidates is None:
-            candidates = self._dynamic_route_index.get(key, [])
-            if not candidates:
-                candidates = [r for routes in self._dynamic_route_index.values() for r in routes]
+            candidates = self._dynamic_route_index
         path_matched = False
         for route in candidates:
             match = route.pattern.match(path)
@@ -1437,7 +1439,7 @@ class Night(Router):
                                if p.name not in {"req", "request"} and p.name not in kwargs), None)
                 if target is not None:
                     kwargs[target.name] = validated
-            if not any(p.name not in {"req", "request"} and p.name not in kwargs for p in (sig.parameters.values() if sig else [])):
+            if target is None:
                 kwargs.setdefault("data", validated)
         if sig is not None:
             for name, p in sig.parameters.items():
