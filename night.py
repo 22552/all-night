@@ -38,9 +38,12 @@ import json
 import mimetypes
 import os
 import re
+import sys
 import traceback
 import typing as t
 import urllib.parse
+import argparse
+import runpy
 
 # ----------------------------
 # Utilities
@@ -348,6 +351,29 @@ class Request:
             self._json = json.loads(b.decode("utf-8"))
         self._json_loaded = True
         return self._json
+
+    async def form(self) -> "QueryDict":
+        body = await self.body()
+        ctype = (self.header("content-type") or "").split(";", 1)[0].strip().lower()
+        if ctype == "application/x-www-form-urlencoded":
+            return QueryDict(urllib.parse.parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True))
+        if ctype == "multipart/form-data":
+            raise NotImplementedError("multipart form parsing is not implemented yet")
+        return QueryDict()
+
+
+class QueryDict(dict[str, list[str]]):
+    """Django-like multi-value query/form mapping."""
+
+    def __init__(self, values: t.Mapping[str, t.Any] | None = None):
+        super().__init__({k: list(v) if isinstance(v, list) else [str(v)] for k, v in (values or {}).items()})
+
+    def get(self, key: str, default: t.Any = None):
+        values = super().get(key)
+        return values[-1] if values else default
+
+    def getlist(self, key: str) -> list[str]:
+        return list(super().get(key, []))
 
 
 class WebSocket:
@@ -1184,6 +1210,12 @@ def html(s: str, status: int = 200, headers: dict[str, str] | None = None) -> HT
     return HTMLResponse(s, status=status, headers=headers)
 
 
+def redirect(location: str, status: int = 302, *, headers: dict[str, str] | None = None) -> Response:
+    h = dict(headers or {})
+    h["location"] = location
+    return Response(b"", status=status, headers=h)
+
+
 def clear_client_storage(
     *,
     cookies: t.Iterable[str] = (),
@@ -1397,9 +1429,35 @@ def create_app(debug: bool = False) -> Night:
 app = create_app(debug=bool(os.environ.get("NIGHT_DEBUG")))
 
 
-if __name__ == "__main__":
-    # Convenience dev runner (requires uvicorn):
-    #   NIGHT_DEBUG=1 python night.py
-    import uvicorn
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="night")
+    sub = parser.add_subparsers(dest="command", required=True)
+    run_parser = sub.add_parser("run")
+    run_parser.add_argument("module")
+    run_parser.add_argument("--host", default="127.0.0.1")
+    run_parser.add_argument("--port", type=int, default=8000)
+    sub.add_parser("routes")
+    sub.add_parser("shell")
+    args = parser.parse_args(argv)
 
-    uvicorn.run("night:app", host="127.0.0.1", port=8000, reload=False, log_level="info")
+    if args.command == "routes":
+        for route in app.routes:
+            print(f"{','.join(sorted(route.methods)):20} {route.raw_path}")
+        for route in app.websocket_routes:
+            print(f"WEBSOCKET             {route.raw_path}")
+        return 0
+    if args.command in {"run", "shell"}:
+        namespace = runpy.run_path(args.module) if args.command == "run" else globals()
+        target = namespace.get("app", app)
+        if args.command == "shell":
+            import code
+            code.interact(local={"app": target, **namespace})
+            return 0
+        import uvicorn
+        uvicorn.run(target, host=args.host, port=args.port)
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli(sys.argv[1:]))
