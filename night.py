@@ -660,6 +660,59 @@ class Extension:
         raise NotImplementedError
 
 
+class GraphQLExtension(Extension):
+    """Optional GraphQL-over-HTTP endpoint powered by ``graphql-core``."""
+
+    name = "graphql"
+
+    def __init__(self, schema: t.Any, *, path: str = "/graphql"):
+        self.schema = schema
+        self.path = path
+
+    def init_app(self, app: "Night", **config: t.Any) -> None:
+        try:
+            from graphql import graphql
+        except ImportError as exc:
+            raise RuntimeError("GraphQLExtension requires: pip install graphql-core") from exc
+
+        async def endpoint(req: Request):
+            payload = await req.json() if req.method in {"POST", "QUERY"} else None
+            if payload is None:
+                query = req.query.get("query", "")
+                variables = req.query.get("variables")
+                operation_name = req.query.get("operationName")
+                if isinstance(variables, str) and variables:
+                    try:
+                        variables = json.loads(variables)
+                    except json.JSONDecodeError:
+                        return JSONResponse({"errors": [{"message": "Invalid variables JSON"}]}, status=400)
+            else:
+                if not isinstance(payload, dict):
+                    return JSONResponse({"errors": [{"message": "Request must be a JSON object"}]}, status=400)
+                query = payload.get("query", "")
+                variables = payload.get("variables")
+                operation_name = payload.get("operationName")
+
+            if not isinstance(query, str) or not query.strip():
+                return JSONResponse({"errors": [{"message": "Missing GraphQL query"}]}, status=400)
+            result = graphql(
+                self.schema,
+                query,
+                variable_values=variables,
+                operation_name=operation_name,
+            )
+            if inspect.isawaitable(result):
+                result = await t.cast(t.Awaitable, result)
+            output: dict[str, t.Any] = {}
+            if result.data is not None:
+                output["data"] = result.data
+            if result.errors:
+                output["errors"] = [{"message": str(error)} for error in result.errors]
+            return JSONResponse(output, status=200 if not result.errors else 400)
+
+        app.route(self.path, methods=("GET", "POST", "QUERY"), name="graphql")(endpoint)
+
+
 class Router:
     """A blueprint-like container for routes."""
 
