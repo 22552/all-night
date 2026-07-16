@@ -15,11 +15,11 @@ Night is a single-file ASGI framework. This documentation follows the public API
 
 - [Application and routing](reference/application.md)
 - [Request and response API](reference/request-response.md)
+- [SQLite ORM](reference/orm.md)
 - [CLI, testing, and extensions](reference/tooling.md)
 - [Deployment notes](operations/deployment.md)
 
 ## Design boundaries
 
 Night deliberately keeps its core dependency-free. Optional integrations such as `uvicorn`, `graphql-core`, and `lupa` are installed by the application that uses them.
-
 
