@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: all-night
+    runtime: docker
+    healthCheckPath: /health
+    autoDeploy: true
+
