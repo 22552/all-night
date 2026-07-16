@@ -49,6 +49,8 @@ from email.parser import BytesParser
 import argparse
 import runpy
 import base64
+import secrets
+import types
 
 # ----------------------------
 # Utilities
@@ -229,6 +231,72 @@ class MethodNotAllowed(HTTPError):
     def __init__(self, allowed: t.Iterable[str] = (), detail: str = "Method Not Allowed"):
         self.allowed = sorted(set(allowed))
         super().__init__(405, detail)
+
+
+class ValidationError(HTTPError):
+    def __init__(self, detail: str = "Invalid request body"):
+        super().__init__(422, detail)
+
+
+def _validate_dataclass(model: type, value: t.Any) -> t.Any:
+    if not dataclasses.is_dataclass(model) or not isinstance(value, dict):
+        raise ValidationError("Request body must be a JSON object")
+    hints = t.get_type_hints(model)
+    result: dict[str, t.Any] = {}
+    for field in dataclasses.fields(model):
+        if field.name not in value:
+            if field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING:
+                continue
+            raise ValidationError(f"Missing field: {field.name}")
+        raw = value[field.name]
+        typ = hints.get(field.name, field.type)
+        origin = t.get_origin(typ)
+        args = t.get_args(typ)
+        if origin in (t.Union, types.UnionType) and type(None) in args:
+            typ = next((x for x in args if x is not type(None)), t.Any)
+            if raw is None:
+                result[field.name] = None
+                continue
+        try:
+            if typ is bool and not isinstance(raw, bool):
+                raise ValueError
+            if typ in (int, float, str, bool) and not isinstance(raw, typ):
+                raw = typ(raw)
+            elif dataclasses.is_dataclass(typ):
+                raw = _validate_dataclass(typ, raw)
+        except (TypeError, ValueError):
+            raise ValidationError(f"Invalid field: {field.name}")
+        result[field.name] = raw
+    return model(**result)
+
+
+def csrf_token() -> str:
+    value = session().get("_csrf_token")
+    if not isinstance(value, str) or not value:
+        value = secrets.token_urlsafe(32)
+        session()["_csrf_token"] = value
+    return value
+
+
+async def csrf_protect(req: Request | None = None) -> None:
+    req = req or request()
+    if req.method not in {"POST", "PUT", "PATCH", "DELETE", "QUERY"}:
+        return
+    supplied = req.header("x-csrf-token")
+    if not supplied and (req.header("content-type") or "").split(";", 1)[0].lower() in {
+        "application/x-www-form-urlencoded", "multipart/form-data"
+    }:
+        supplied = (await req.form()).get("csrf_token")
+    expected = session().get("_csrf_token")
+    if not isinstance(supplied, str) or not isinstance(expected, str) or not hmac.compare_digest(supplied, expected):
+        raise HTTPError(403, "CSRF validation failed")
+
+
+def csrf_middleware() -> Middleware:
+    async def middleware(req: Request, call_next: t.Callable[[], t.Awaitable[Response]]) -> Response:
+        await csrf_protect(req)
+        return await call_next()
+    return middleware
 
 
 # ----------------------------
@@ -880,6 +948,7 @@ class Route:
     raw_path: str
     name: str | None = None
     signature: inspect.Signature | None = dataclasses.field(default=None, init=False)
+    body_model: type | None = None
 
     def __post_init__(self):
         try:
@@ -1014,12 +1083,14 @@ class Router:
     def __init__(self):
         self.routes: list[Route] = []
 
-    def route(self, path: str, methods: t.Iterable[str] = ("GET",), *, name: str | None = None):
+    def route(self, path: str, methods: t.Iterable[str] = ("GET",), *, name: str | None = None, body: type | None = None):
         methods_set = {m.upper() for m in methods}
 
         def decorator(fn: t.Callable):
             pattern, names = compile_path(path)
-            route = Route(methods=methods_set, pattern=pattern, param_names=names, endpoint=fn, raw_path=path, name=name)
+            route = Route(methods=methods_set, pattern=pattern, param_names=names, endpoint=fn, raw_path=path, name=name, body_model=body)
+            if body is not None:
+                setattr(fn, "__night_body_model__", body)
             self.routes.append(route)
             hook = getattr(self, "_on_route_added", None)
             if hook is not None: hook(route)
@@ -1030,8 +1101,8 @@ class Router:
     def get(self, path: str, *, name: str | None = None):
         return self.route(path, methods=("GET",), name=name)
 
-    def post(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("POST",), name=name)
+    def post(self, path: str, *, name: str | None = None, body: type | None = None):
+        return self.route(path, methods=("POST",), name=name, body=body)
 
     def put(self, path: str, *, name: str | None = None):
         return self.route(path, methods=("PUT",), name=name)
@@ -1357,6 +1428,17 @@ class Night(Router):
             sig = None
 
         kwargs: dict[str, t.Any] = dict(params)
+        body_model = getattr(fn, "__night_body_model__", None)
+        if body_model is not None:
+            payload = await req.json()
+            validated = _validate_dataclass(body_model, payload)
+            if sig is not None:
+                target = next((p for p in sig.parameters.values()
+                               if p.name not in {"req", "request"} and p.name not in kwargs), None)
+                if target is not None:
+                    kwargs[target.name] = validated
+            if not any(p.name not in {"req", "request"} and p.name not in kwargs for p in (sig.parameters.values() if sig else [])):
+                kwargs.setdefault("data", validated)
         if sig is not None:
             for name, p in sig.parameters.items():
                 if name in kwargs and p.annotation is int:
@@ -1846,3 +1928,4 @@ def cli(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(cli(sys.argv[1:]))
+
