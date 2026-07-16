@@ -40,6 +40,7 @@ import mimetypes
 import os
 import re
 import sys
+import tempfile
 import traceback
 import typing as t
 import urllib.parse
@@ -407,9 +408,11 @@ class Request:
 
 def session() -> dict[str, t.Any]:
     req = request()
+    secret = req.scope.get("session_secret")
+    if not secret:
+        raise RuntimeError("Session requires secret_key")
     if "_session" not in req.scope:
         raw = req.cookies.get("night_session")
-        secret = req.scope.get("session_secret")
         data = {}
         if raw and secret and "." in raw:
             encoded, signature = raw.rsplit(".", 1)
@@ -433,6 +436,20 @@ def get_flashed_messages(*, with_categories: bool = False) -> list[t.Any]:
     return values if with_categories else [message for _, message in values]
 
 
+def session_clear():
+    req = request()
+    req.scope["_session"] = {}
+    req.scope["_session_regenerated"] = True
+
+
+def session_regenerate():
+    data = dict(session())
+    data.pop("_nonce", None)
+    data["_nonce"] = os.urandom(16).hex()
+    request().scope["_session"] = data
+    request().scope["_session_regenerated"] = True
+
+
 class QueryDict(dict[str, list[str]]):
     """Django-like multi-value query/form mapping."""
 
@@ -451,14 +468,23 @@ class QueryDict(dict[str, list[str]]):
 class UploadFile:
     filename: str
     content_type: str | None
-    data: bytes
+    data: t.Any
+
+    def __post_init__(self):
+        if isinstance(self.data, bytes):
+            spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
+            spool.write(self.data)
+            spool.seek(0)
+            self.data = spool
 
     async def read(self) -> bytes:
-        return self.data
+        self.data.seek(0)
+        return self.data.read()
 
     def save(self, path: str):
+        self.data.seek(0)
         with open(path, "wb") as f:
-            f.write(self.data)
+            f.write(self.data.read())
 
 
 class CSSRegistry:
@@ -1032,6 +1058,8 @@ class Night(Router):
         self.websocket_routes: list[Route] = []
         self.rpc_methods: dict[str, t.Callable] = {}
         self._rpc_route_installed = False
+        self.startup_hooks: list[t.Callable] = []
+        self.shutdown_hooks: list[t.Callable] = []
 
     def test_client(self) -> TestClient:
         return TestClient(self)
@@ -1105,8 +1133,6 @@ class Night(Router):
                 if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "QUERY"}:
                     item[method.lower()] = {"operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"), "responses": {"200": {"description": "Success"}}}
         return {"openapi": "3.1.0", "info": {"title": "Night API", "version": "1.0.0"}, "paths": paths}
-        self.startup_hooks: list[t.Callable] = []
-        self.shutdown_hooks: list[t.Callable] = []
 
     def on_startup(self, fn: t.Callable):
         self.startup_hooks.append(fn)
