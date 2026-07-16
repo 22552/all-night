@@ -575,6 +575,8 @@ class TestClient:
             body = data.encode() if isinstance(data, str) else (data or b"")
             parsed = urllib.parse.urlsplit(path)
             hs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+            if self.cookies:
+                hs.append((b"cookie", "; ".join(f"{k}={v}" for k, v in self.cookies.items()).encode()))
             if body and not any(k == b"content-length" for k, _ in hs): hs.append((b"content-length", str(len(body)).encode()))
             events = [{"type": "http.request", "body": body, "more_body": False}]
             async def receive(): return events.pop(0) if events else {"type": "http.disconnect"}
@@ -582,6 +584,11 @@ class TestClient:
             scope = {"type": "http", "method": method.upper(), "path": parsed.path or "/", "query_string": parsed.query.encode(), "headers": hs}
             await self.app(scope, receive, send)
             start = next(e for e in sent if e["type"] == "http.response.start")
+            for key, value in start["headers"]:
+                if key.lower() == b"set-cookie":
+                    pair = value.decode().split(";", 1)[0]
+                    name, _, cookie_value = pair.partition("=")
+                    if name: self.cookies[name] = cookie_value
             chunks = [e.get("body", b"") for e in sent if e["type"] == "http.response.body"]
             return TestResponse(start["status"], {k.decode(): v.decode() for k, v in start["headers"]}, b"".join(chunks))
         return asyncio.run(run())
