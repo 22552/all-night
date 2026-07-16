@@ -1480,6 +1480,19 @@ class Night(Router):
             raise MethodNotAllowed(self._allowed_methods_for_path(path))
         raise NotFound()
 
+    def _coerce_response(self, value: t.Any) -> Response:
+        if isinstance(value, Response):
+            return value
+        if isinstance(value, (dict, list)):
+            return JSONResponse(value)
+        if isinstance(value, str):
+            return PlainTextResponse(value)
+        if isinstance(value, (bytes, bytearray)):
+            return Response(value)
+        if value is None:
+            return Response(b"", status=204)
+        return PlainTextResponse(str(value))
+
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, str]) -> Response:
         # Convert params types based on annotations where possible
         try:
@@ -1488,6 +1501,10 @@ class Night(Router):
                 sig = inspect.signature(fn)
         except Exception:
             sig = None
+        try:
+            type_hints = t.get_type_hints(fn)
+        except Exception:
+            type_hints = {}
 
         kwargs: dict[str, t.Any] = dict(params)
         body_model = getattr(fn, "__night_body_model__", None)
@@ -1504,7 +1521,7 @@ class Night(Router):
                 kwargs.setdefault("data", validated)
         if sig is not None:
             for name, p in sig.parameters.items():
-                if name in kwargs and p.annotation is int:
+                if name in kwargs and type_hints.get(name, p.annotation) is int:
                     try:
                         kwargs[name] = int(kwargs[name])
                     except Exception:
@@ -1517,7 +1534,7 @@ class Night(Router):
             else:
                 if sig is not None and len(sig.parameters) >= 1:
                     first = next(iter(sig.parameters.values()))
-                    if first.annotation is Request or first.name in ("request", "req"):
+                    if type_hints.get(first.name, first.annotation) is Request or first.name in ("request", "req"):
                         res = fn(req, **kwargs)
                     else:
                         res = fn(**kwargs)
@@ -1526,25 +1543,13 @@ class Night(Router):
 
             if inspect.isawaitable(res):
                 res = await t.cast(t.Awaitable, res)
-
-            if isinstance(res, Response):
-                return res
-            if isinstance(res, (dict, list)):
-                return JSONResponse(res)
-            if isinstance(res, (str, bytes, bytearray)):
-                if isinstance(res, str):
-                    return PlainTextResponse(res)
-                return Response(res)
-            if res is None:
-                return Response(b"", status=204)
-            return PlainTextResponse(str(res))
+            return self._coerce_response(res)
         except HTTPError:
             raise
         except Exception:
-            if self.debug:
-                tb = traceback.format_exc()
-                return PlainTextResponse(tb, status=500)
-            return PlainTextResponse("Internal Server Error", status=500)
+            # Let __call__ select a registered @errorhandler before rendering
+            # the framework's fallback 500 response.
+            raise
 
     async def _run_before_hooks(self, req: Request) -> Response | None:
         for fn in self.before_hooks:
@@ -1650,7 +1655,7 @@ class Night(Router):
                     out = handler(req, he)
                     if inspect.isawaitable(out):
                         out = await t.cast(t.Awaitable, out)
-                    resp = t.cast(Response, out)
+                    resp = self._coerce_response(out)
                 else:
                     error_headers = {}
                     if isinstance(he, MethodNotAllowed) and he.allowed:
@@ -1667,7 +1672,7 @@ class Night(Router):
                     out = handler(req, e)
                     if inspect.isawaitable(out):
                         out = await t.cast(t.Awaitable, out)
-                    resp = t.cast(Response, out)
+                    resp = self._coerce_response(out)
                 else:
                     if self.debug:
                         resp = PlainTextResponse(traceback.format_exc(), status=500)
