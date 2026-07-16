@@ -338,6 +338,43 @@ class Request:
         return self._json
 
 
+class WebSocket:
+    def __init__(self, scope: dict, receive, send):
+        self.scope = scope
+        self.receive = receive
+        self.send = send
+
+    @property
+    def path(self) -> str:
+        return self.scope.get("path") or "/"
+
+    async def accept(self, subprotocol: str | None = None):
+        event = {"type": "websocket.accept"}
+        if subprotocol:
+            event["subprotocol"] = subprotocol
+        await self.send(event)
+
+    async def receive_text(self) -> str:
+        event = await self.receive()
+        if event["type"] == "websocket.disconnect":
+            raise ConnectionError("WebSocket disconnected")
+        if event.get("text") is not None:
+            return event["text"]
+        return (event.get("bytes") or b"").decode("utf-8", errors="replace")
+
+    async def send_text(self, data: str):
+        await self.send({"type": "websocket.send", "text": str(data)})
+
+    async def send_bytes(self, data: bytes):
+        await self.send({"type": "websocket.send", "bytes": bytes(data)})
+
+    async def close(self, code: int = 1000, reason: str = ""):
+        event = {"type": "websocket.close", "code": int(code)}
+        if reason:
+            event["reason"] = reason
+        await self.send(event)
+
+
 class Response:
     def __init__(
         self,
@@ -671,6 +708,7 @@ class Night(Router):
         self.error_handlers: dict[type[BaseException], ErrorHandler] = {}
         self.state: dict[str, t.Any] = {}
         self.extensions: dict[str, t.Any] = {}
+        self.websocket_routes: list[Route] = []
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
 
@@ -710,6 +748,34 @@ class Night(Router):
     def register_blueprint(self, blueprint: Blueprint, *, url_prefix: str | None = None):
         """Mount a Blueprint and return it for fluent setup code."""
         return blueprint.register(self, url_prefix=url_prefix)
+
+    def websocket(self, path: str, *, name: str | None = None):
+        def decorator(fn: t.Callable):
+            pattern, names = compile_path(path)
+            self.websocket_routes.append(Route({"WEBSOCKET"}, pattern, names, fn, path, name))
+            return fn
+        return decorator
+
+    async def _handle_websocket(self, scope, receive, send):
+        path = scope.get("path") or "/"
+        for route in self.websocket_routes:
+            match = route.pattern.match(path)
+            if not match:
+                continue
+            ws = WebSocket(scope, receive, send)
+            params = match.groupdict()
+            sig = inspect.signature(route.endpoint)
+            kwargs = dict(params)
+            if "ws" in sig.parameters:
+                result = route.endpoint(ws=ws, **kwargs)
+            elif sig.parameters:
+                result = route.endpoint(ws, **kwargs)
+            else:
+                result = route.endpoint(**kwargs)
+            if inspect.isawaitable(result):
+                await t.cast(t.Awaitable, result)
+            return
+        await send({"type": "websocket.close", "code": 1000})
 
     def lua_macro(
         self,
@@ -892,6 +958,9 @@ class Night(Router):
         return methods
 
     async def __call__(self, scope, receive, send):
+        if scope.get("type") == "websocket":
+            await self._handle_websocket(scope, receive, send)
+            return
         if scope.get("type") == "lifespan":
             await self._handle_lifespan(receive, send)
             return
