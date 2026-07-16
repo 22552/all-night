@@ -562,6 +562,18 @@ AfterHook = t.Callable[[Request, Response], t.Awaitable[Response] | Response]
 ErrorHandler = t.Callable[[Request, Exception], t.Awaitable[Response] | Response]
 
 
+class Extension:
+    """Base class for reusable Night extensions.
+
+    Subclasses typically register routes, middleware, or hooks in
+    ``init_app``.  Extensions should keep their own configuration in the
+    instance rather than mutating global state.
+    """
+
+    def init_app(self, app: "Night", **config: t.Any) -> None:
+        raise NotImplementedError
+
+
 class Router:
     """A blueprint-like container for routes."""
 
@@ -602,6 +614,32 @@ class Night(Router):
         self.after_hooks: list[AfterHook] = []
         self.error_handlers: dict[type[BaseException], ErrorHandler] = {}
         self.state: dict[str, t.Any] = {}
+        self.extensions: dict[str, t.Any] = {}
+
+    def register_extension(
+        self,
+        extension: t.Any,
+        *,
+        name: str | None = None,
+        **config: t.Any,
+    ) -> t.Any:
+        """Install an extension and return it.
+
+        An extension may be an object with ``init_app(app, **config)`` or a
+        callable accepting the app.  The optional name is used for lookup in
+        ``app.extensions`` and defaults to the class name.
+        """
+        key = name or getattr(extension, "name", None) or extension.__class__.__name__.lower()
+        if hasattr(extension, "init_app"):
+            extension.init_app(self, **config)
+        elif callable(extension):
+            result = extension(self, **config)
+            if result is not None:
+                extension = result
+        else:
+            raise TypeError("extension must be callable or define init_app(app, **config)")
+        self.extensions[key] = extension
+        return extension
 
     def lua_macro(
         self,
