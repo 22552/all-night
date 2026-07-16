@@ -47,6 +47,7 @@ import urllib.parse
 # ----------------------------
 
 _T = t.TypeVar("_T")
+MAX_BODY_SIZE = 16 * 1024 * 1024
 
 
 class LuaUnavailable(RuntimeError):
@@ -231,6 +232,8 @@ class Request:
     _query: dict[str, t.Union[str, list[str]]] | None = dataclasses.field(default=None, init=False)
     _cookies: dict[str, str] | None = dataclasses.field(default=None, init=False)
     path_params: dict[str, t.Any] = dataclasses.field(default_factory=dict)
+    max_body_size: int = MAX_BODY_SIZE
+    _headers: dict[str, str] | None = dataclasses.field(default=None, init=False)
 
     @property
     def method(self) -> str:
@@ -252,10 +255,13 @@ class Request:
 
     @property
     def headers(self) -> dict[str, str]:
+        if self._headers is not None:
+            return self._headers
         # ASGI provides list[(bytes, bytes)]
         hs = {}
         for k, v in self.scope.get("headers") or []:
             hs[k.decode("latin-1").lower()] = v.decode("latin-1")
+        self._headers = hs
         return hs
 
     def header(self, name: str, default: str | None = None) -> str | None:
@@ -313,12 +319,17 @@ class Request:
         if self._body is not None:
             return self._body
         body = bytearray()
+        content_length = self.header("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > self.max_body_size:
+            raise HTTPError(413, "Request body too large")
         more = True
         while more:
             event = await self.receive()
             if event["type"] != "http.request":
                 continue
             body += event.get("body", b"")
+            if len(body) > self.max_body_size:
+                raise HTTPError(413, "Request body too large")
             more = event.get("more_body", False)
         self._body = bytes(body)
         return self._body
@@ -679,6 +690,9 @@ class Router:
     def delete(self, path: str, *, name: str | None = None):
         return self.route(path, methods=("DELETE",), name=name)
 
+    def query(self, path: str, *, name: str | None = None):
+        return self.route(path, methods=("QUERY",), name=name)
+
 
 class Blueprint(Router):
     """A named, mountable collection of routes and optional setup hook."""
@@ -699,9 +713,10 @@ class Blueprint(Router):
 
 
 class Night(Router):
-    def __init__(self, *, debug: bool = False):
+    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE):
         super().__init__()
         self.debug = bool(debug)
+        self.max_body_size = int(max_body_size)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
         self.after_hooks: list[AfterHook] = []
@@ -967,7 +982,7 @@ class Night(Router):
         if scope.get("type") != "http":
             return
 
-        req = Request(scope=scope, receive=receive, send=send)
+        req = Request(scope=scope, receive=receive, send=send, max_body_size=self.max_body_size)
         token = _current_request.set(req)
         try:
 
@@ -1030,9 +1045,13 @@ class Night(Router):
                         resp = PlainTextResponse("Internal Server Error", status=500)
 
             if is_head:
-                # Remove body and adjust content-length (keep headers mostly intact).
+                # HEAD has no body, but preserves GET's representation metadata.
+                content_length = resp.headers.get("content-length")
                 resp.body = b""
-                resp.headers["content-length"] = "0"
+                if content_length is not None:
+                    resp.headers["content-length"] = content_length
+                else:
+                    resp.headers.pop("content-length", None)
 
             await resp(scope, receive, send)
         finally:
@@ -1079,6 +1098,25 @@ def text(s: str, status: int = 200, headers: dict[str, str] | None = None) -> Pl
 
 def html(s: str, status: int = 200, headers: dict[str, str] | None = None) -> HTMLResponse:
     return HTMLResponse(s, status=status, headers=headers)
+
+
+def clear_client_storage(
+    *,
+    cookies: t.Iterable[str] = (),
+    status: int = 204,
+    headers: dict[str, str] | None = None,
+) -> Response:
+    """Ask browsers to clear caches/storage and expire selected cookies.
+
+    Browser JavaScript localStorage cannot be deleted by a server directly;
+    ``Clear-Site-Data`` is the HTTP-level mechanism for this request.
+    """
+    h = dict(headers or {})
+    h.setdefault("cache-control", "no-store")
+    h.setdefault("clear-site-data", '"cache", "storage"')
+    for name in cookies:
+        h.setdefault("set-cookie", f"{name}=; Max-Age=0; Path=/; HttpOnly")
+    return Response(b"", status=status, headers=h)
 
 
 def stream(
