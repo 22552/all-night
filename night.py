@@ -56,6 +56,7 @@ import base64
 
 _T = t.TypeVar("_T")
 MAX_BODY_SIZE = 16 * 1024 * 1024
+MAX_SESSION_COOKIE_SIZE = 3800
 
 
 class LuaUnavailable(RuntimeError):
@@ -1027,6 +1028,9 @@ class Router:
     def patch(self, path: str, *, name: str | None = None):
         return self.route(path, methods=("PATCH",), name=name)
 
+    def purge(self, path: str, *, name: str | None = None):
+        return self.route(path, methods=("PURGE",), name=name)
+
 
 class Blueprint(Router):
     """A named, mountable collection of routes and optional setup hook."""
@@ -1047,11 +1051,12 @@ class Blueprint(Router):
 
 
 class Night(Router):
-    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, css: bool = False, css_minify: bool = False):
+    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, session_secure: bool | None = None, css: bool = False, css_minify: bool = False):
         super().__init__()
         self.debug = bool(debug)
         self.max_body_size = int(max_body_size)
         self.secret_key = secret_key.encode() if isinstance(secret_key, str) else secret_key
+        self.session_secure = session_secure
         self.css_minify = css_minify
         self.styles: CSSRegistry | None = None
         if css: self.enable_css(minify=css_minify)
@@ -1493,7 +1498,11 @@ class Night(Router):
             if self.secret_key and "_session" in req.scope:
                 encoded = base64.urlsafe_b64encode(json.dumps(req.scope["_session"], separators=(",", ":")).encode()).decode().rstrip("=")
                 signature = hmac.new(self.secret_key, encoded.encode(), hashlib.sha256).hexdigest()
-                resp.set_cookie("night_session", encoded + "." + signature, httponly=True, secure=False, samesite="Lax")
+                if len(encoded) + len(signature) + len("night_session=; Path=/; HttpOnly; SameSite=Lax") > MAX_SESSION_COOKIE_SIZE:
+                    resp = PlainTextResponse("Session data exceeds cookie size limit", status=500)
+                else:
+                    secure = self.session_secure if self.session_secure is not None else scope.get("scheme") == "https"
+                    resp.set_cookie("night_session", encoded + "." + signature, httponly=True, secure=secure, samesite="Lax")
 
             await resp(scope, receive, send)
         finally:
