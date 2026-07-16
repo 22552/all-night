@@ -51,6 +51,8 @@ import runpy
 import base64
 import secrets
 import types
+import contextlib
+import sqlite3
 
 # ----------------------------
 # Utilities
@@ -231,6 +233,141 @@ class MethodNotAllowed(HTTPError):
     def __init__(self, allowed: t.Iterable[str] = (), detail: str = "Method Not Allowed"):
         self.allowed = sorted(set(allowed))
         super().__init__(405, detail)
+
+
+class ORMError(RuntimeError):
+    """Raised for invalid Night ORM model definitions or operations."""
+
+
+class Database:
+    """A small synchronous SQLite ORM for simple Night applications.
+
+    Models are registered with ``@db.model`` and use normal type annotations.
+    The ORM intentionally supports a compact SQLite subset only.
+    """
+
+    _sqlite_types = {int: "INTEGER", float: "REAL", str: "TEXT", bytes: "BLOB", bool: "INTEGER"}
+
+    def __init__(self, path: str = ":memory:"):
+        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.connection.row_factory = sqlite3.Row
+        self._models: set[type] = set()
+
+    def close(self) -> None:
+        self.connection.close()
+
+    @staticmethod
+    def _name(value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ORMError(f"Invalid SQL identifier: {value!r}")
+        return value
+
+    def model(self, cls: type | None = None, *, table: str | None = None):
+        def register(model: type) -> type:
+            if not dataclasses.is_dataclass(model):
+                model = dataclasses.dataclass(model)
+            model.__night_table__ = self._name(table or model.__name__.lower() + "s")
+            model.__night_db__ = self
+            self._models.add(model)
+
+            model.create = classmethod(lambda kind, **values: self.create(kind, **values))
+            model.get = classmethod(lambda kind, ident: self.get(kind, ident))
+            model.all = classmethod(lambda kind: self.all(kind))
+            model.filter = classmethod(lambda kind, **where: self.filter(kind, **where))
+            model.save = lambda item: self.save(item)
+            model.delete = lambda item: self.delete(item)
+            return model
+        return register if cls is None else register(cls)
+
+    def _fields(self, model: type) -> list[dataclasses.Field]:
+        if model not in self._models:
+            raise ORMError(f"{model.__name__} is not registered; use @db.model")
+        return list(dataclasses.fields(model))
+
+    def create_all(self, *models: type) -> None:
+        for model in models or tuple(self._models):
+            fields = self._fields(model)
+            hints = t.get_type_hints(model)
+            columns = ["id INTEGER PRIMARY KEY AUTOINCREMENT"]
+            for field in fields:
+                if field.name == "id":
+                    continue
+                typ = hints.get(field.name, field.type)
+                origin, args = t.get_origin(typ), t.get_args(typ)
+                if origin in (t.Union, types.UnionType) and type(None) in args:
+                    typ = next(item for item in args if item is not type(None))
+                sql_type = self._sqlite_types.get(typ)
+                if sql_type is None:
+                    raise ORMError(f"Unsupported SQLite field type: {field.name}: {typ}")
+                columns.append(f'"{self._name(field.name)}" {sql_type}')
+            self.connection.execute(f'CREATE TABLE IF NOT EXISTS "{model.__night_table__}" ({", ".join(columns)})')
+        self.connection.commit()
+
+    def _from_row(self, model: type, row: sqlite3.Row):
+        values = {field.name: row[field.name] for field in self._fields(model) if field.name in row.keys()}
+        item = model(**{key: value for key, value in values.items() if key != "id"})
+        setattr(item, "id", row["id"])
+        return item
+
+    def create(self, model: type, **values: t.Any):
+        fields = [field for field in self._fields(model) if field.name != "id"]
+        unknown = set(values) - {field.name for field in fields}
+        if unknown:
+            raise ORMError(f"Unknown model fields: {', '.join(sorted(unknown))}")
+        item = model(**values)
+        self.save(item)
+        return item
+
+    def save(self, item: t.Any) -> None:
+        model = type(item)
+        fields = [field for field in self._fields(model) if field.name != "id"]
+        names = [self._name(field.name) for field in fields]
+        values = [getattr(item, field.name) for field in fields]
+        ident = getattr(item, "id", None)
+        if ident is None:
+            placeholders = ", ".join("?" for _ in names)
+            columns = ", ".join(f'"{name}"' for name in names)
+            cursor = self.connection.execute(f'INSERT INTO "{model.__night_table__}" ({columns}) VALUES ({placeholders})', values)
+            setattr(item, "id", cursor.lastrowid)
+        else:
+            assignments = ", ".join(f'"{name}" = ?' for name in names)
+            self.connection.execute(f'UPDATE "{model.__night_table__}" SET {assignments} WHERE id = ?', [*values, ident])
+        self.connection.commit()
+
+    def get(self, model: type, ident: int):
+        row = self.connection.execute(f'SELECT * FROM "{model.__night_table__}" WHERE id = ?', (ident,)).fetchone()
+        return self._from_row(model, row) if row is not None else None
+
+    def all(self, model: type) -> list[t.Any]:
+        rows = self.connection.execute(f'SELECT * FROM "{model.__night_table__}" ORDER BY id').fetchall()
+        return [self._from_row(model, row) for row in rows]
+
+    def filter(self, model: type, **where: t.Any) -> list[t.Any]:
+        valid = {field.name for field in self._fields(model)} | {"id"}
+        if not where:
+            return self.all(model)
+        if set(where) - valid:
+            raise ORMError("Unknown filter field")
+        clause = " AND ".join(f'"{self._name(name)}" = ?' for name in where)
+        rows = self.connection.execute(f'SELECT * FROM "{model.__night_table__}" WHERE {clause} ORDER BY id', tuple(where.values())).fetchall()
+        return [self._from_row(model, row) for row in rows]
+
+    def delete(self, item: t.Any) -> None:
+        ident = getattr(item, "id", None)
+        if ident is None:
+            return
+        self.connection.execute(f'DELETE FROM "{type(item).__night_table__}" WHERE id = ?', (ident,))
+        self.connection.commit()
+
+    @contextlib.contextmanager
+    def transaction(self):
+        try:
+            yield self
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
 
 class ValidationError(HTTPError):
