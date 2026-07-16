@@ -1019,9 +1019,10 @@ class Router:
 
         def decorator(fn: t.Callable):
             pattern, names = compile_path(path)
-            self.routes.append(
-                Route(methods=methods_set, pattern=pattern, param_names=names, endpoint=fn, raw_path=path, name=name)
-            )
+            route = Route(methods=methods_set, pattern=pattern, param_names=names, endpoint=fn, raw_path=path, name=name)
+            self.routes.append(route)
+            hook = getattr(self, "_on_route_added", None)
+            if hook is not None: hook(route)
             return fn
 
         return decorator
@@ -1076,6 +1077,8 @@ class Night(Router):
         self.css_minify = css_minify
         self.styles: CSSRegistry | None = None
         self._css_cache: str | None = None
+        self._static_route_index: dict[str, list[Route]] = {}
+        self._dynamic_route_index: dict[str, list[Route]] = {}
         if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
@@ -1091,6 +1094,11 @@ class Night(Router):
 
     def test_client(self) -> TestClient:
         return TestClient(self)
+
+    def _on_route_added(self, route: Route):
+        target = self._static_route_index if "<" not in route.raw_path else self._dynamic_route_index
+        key = route.raw_path.rstrip("/") or "/"
+        target.setdefault(key, []).append(route)
 
     def enable_css(self, *, minify: bool = False):
         self.css_minify = minify
@@ -1294,6 +1302,9 @@ class Night(Router):
                     name=r.name,
                 )
             )
+        self._static_route_index.clear()
+        self._dynamic_route_index.clear()
+        for route in self.routes: self._on_route_added(route)
         return router
 
     # ---- url building ----
@@ -1318,8 +1329,14 @@ class Night(Router):
         raise NotFound()
 
     def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, str]]:
+        key = path.rstrip("/") or "/"
+        candidates = self._static_route_index.get(key)
+        if candidates is None:
+            candidates = self._dynamic_route_index.get(key, [])
+            if not candidates:
+                candidates = [r for routes in self._dynamic_route_index.values() for r in routes]
         path_matched = False
-        for route in self.routes:
+        for route in candidates:
             match = route.pattern.match(path)
             if not match:
                 continue
