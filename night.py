@@ -49,6 +49,54 @@ import urllib.parse
 _T = t.TypeVar("_T")
 
 
+class LuaUnavailable(RuntimeError):
+    """Raised when Lua macros are used without the optional lupa package."""
+
+
+def _lua_macro_endpoint(source: str) -> t.Callable:
+    """Build an endpoint from a small, sandboxed Lua function.
+
+    The script must return a string, number, or a table containing ``body``,
+    ``status``, and optional ``headers``.  Lua macros are deliberately
+    optional: applications that do not use them keep zero dependencies.
+    """
+    try:
+        from lupa import LuaRuntime
+    except ImportError as exc:
+        raise LuaUnavailable("Lua macros require the optional 'lupa' package") from exc
+
+    lua = LuaRuntime(unpack_returned_tuples=True)
+    # Remove libraries that provide filesystem, process, module-loading, or
+    # debug access.  The macro still has basic Lua values and functions.
+    lua.execute("os=nil; io=nil; debug=nil; package=nil; require=nil; dofile=nil; loadfile=nil")
+    fn = lua.execute(
+        "local f = function(req) " + source + " end; return f"
+    )
+
+    async def endpoint(req: Request, **params):
+        data = {
+            "method": req.method,
+            "path": req.path,
+            "query": req.query,
+            "headers": req.headers,
+            "cookies": req.cookies,
+            "params": params,
+        }
+        result = fn(data)
+        if isinstance(result, str):
+            return PlainTextResponse(result)
+        if isinstance(result, (int, float)):
+            return PlainTextResponse(str(result))
+        if result is None:
+            return Response(b"", status=204)
+        body = result["body"]
+        status = int(result["status"] or 200)
+        headers = dict(result["headers"] or {})
+        return Response(_to_bytes(str(body)), status=status, headers=headers)
+
+    return endpoint
+
+
 def _to_bytes(x: t.Union[str, bytes, bytearray]) -> bytes:
     if isinstance(x, (bytes, bytearray)):
         return bytes(x)
@@ -554,6 +602,26 @@ class Night(Router):
         self.after_hooks: list[AfterHook] = []
         self.error_handlers: dict[type[BaseException], ErrorHandler] = {}
         self.state: dict[str, t.Any] = {}
+
+    def lua_macro(
+        self,
+        path: str,
+        source: str,
+        *,
+        methods: t.Iterable[str] = ("GET",),
+        name: str | None = None,
+    ):
+        """Register a small optional Lua macro as a normal route.
+
+        Example::
+
+            app.lua_macro("/hello", 'return "hello " .. req.query.name')
+
+        Install ``lupa`` separately when Lua support is wanted.  The macro
+        receives only a plain request-data table and cannot access the Python
+        process through this API.
+        """
+        return self.route(path, methods=methods, name=name)(_lua_macro_endpoint(source))
 
     # ---- middleware API ----
     def use(self, middleware: Middleware):
