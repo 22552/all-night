@@ -1434,12 +1434,13 @@ class Night(Router):
         if body_model is not None:
             payload = await req.json()
             validated = _validate_dataclass(body_model, payload)
+            target = None
             if sig is not None:
                 target = next((p for p in sig.parameters.values()
                                if p.name not in {"req", "request"} and p.name not in kwargs), None)
-                if target is not None:
-                    kwargs[target.name] = validated
-            if target is None:
+            if target is not None:
+                kwargs[target.name] = validated
+            else:
                 kwargs.setdefault("data", validated)
         if sig is not None:
             for name, p in sig.parameters.items():
