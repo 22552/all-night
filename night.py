@@ -378,15 +378,21 @@ class Request:
         return self._json
 
     async def form(self) -> "QueryDict":
+        if "_form" in self.scope:
+            return self.scope["_form"]
         body = await self.body()
         ctype = (self.header("content-type") or "").split(";", 1)[0].strip().lower()
         if ctype == "application/x-www-form-urlencoded":
-            return QueryDict(urllib.parse.parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True))
+            result = QueryDict(urllib.parse.parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True))
+            self.scope["_form"] = result
+            return result
         if ctype == "multipart/form-data":
             form, files = self._parse_multipart(body)
             self.scope["_files"] = files
+            self.scope["_form"] = form
             return form
-        return QueryDict()
+        self.scope["_form"] = QueryDict()
+        return self.scope["_form"]
 
     async def files(self) -> dict[str, UploadFile]:
         await self.form()
@@ -407,6 +413,8 @@ class Request:
             data = part.get_payload(decode=True) or b""
             filename = part.get_filename()
             if filename:
+                if len(data) > self.max_body_size:
+                    raise HTTPError(413, "Uploaded file too large")
                 files[name] = UploadFile(filename, part.get_content_type(), data)
             else:
                 fields.setdefault(name, []).append(data.decode(part.get_content_charset() or "utf-8", errors="replace"))
