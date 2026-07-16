@@ -211,7 +211,8 @@ class NotFound(HTTPError):
 
 
 class MethodNotAllowed(HTTPError):
-    def __init__(self, detail: str = "Method Not Allowed"):
+    def __init__(self, allowed: t.Iterable[str] = (), detail: str = "Method Not Allowed"):
+        self.allowed = sorted(set(allowed))
         super().__init__(405, detail)
 
 
@@ -393,10 +394,12 @@ class Response:
         status: int = 200,
         headers: t.Mapping[str, str] | None = None,
         content_type: str | None = None,
+        raw_headers: t.Iterable[tuple[str, str]] | None = None,
     ):
         self.status = int(status)
         self.body = _to_bytes(body)
         self.headers = {k.lower(): v for k, v in (headers or {}).items()}
+        self.raw_headers = list(raw_headers or ())
         if content_type is not None:
             self.headers["content-type"] = content_type
         if "date" not in self.headers:
@@ -405,7 +408,11 @@ class Response:
             self.headers["content-length"] = str(len(self.body))
 
     def asgi_headers(self) -> list[tuple[bytes, bytes]]:
-        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in self.headers.items()]
+        normal = [(k, v) for k, v in self.headers.items() if k != "set-cookie"]
+        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in normal + self.raw_headers]
+
+    def add_header(self, name: str, value: str):
+        self.raw_headers.append((name.lower(), value))
 
     async def __call__(self, scope, receive, send):
         await send({"type": "http.response.start", "status": self.status, "headers": self.asgi_headers()})
@@ -746,6 +753,9 @@ class Router:
     def query(self, path: str, *, name: str | None = None):
         return self.route(path, methods=("QUERY",), name=name)
 
+    def patch(self, path: str, *, name: str | None = None):
+        return self.route(path, methods=("PATCH",), name=name)
+
 
 class Blueprint(Router):
     """A named, mountable collection of routes and optional setup hook."""
@@ -831,19 +841,24 @@ class Night(Router):
             if not match:
                 continue
             ws = WebSocket(scope, receive, send)
-            params = match.groupdict()
-            sig = inspect.signature(route.endpoint)
-            kwargs = dict(params)
-            if "ws" in sig.parameters:
-                result = route.endpoint(ws=ws, **kwargs)
-            elif sig.parameters:
-                result = route.endpoint(ws, **kwargs)
-            else:
-                result = route.endpoint(**kwargs)
-            if inspect.isawaitable(result):
-                await t.cast(t.Awaitable, result)
+            try:
+                params = match.groupdict()
+                sig = inspect.signature(route.endpoint)
+                kwargs = dict(params)
+                if "ws" in sig.parameters:
+                    result = route.endpoint(ws=ws, **kwargs)
+                elif sig.parameters:
+                    result = route.endpoint(ws, **kwargs)
+                else:
+                    result = route.endpoint(**kwargs)
+                if inspect.isawaitable(result):
+                    await t.cast(t.Awaitable, result)
+            except ConnectionError:
+                return
+            except Exception:
+                await ws.close(code=1011, reason="Internal server error")
             return
-        await send({"type": "websocket.close", "code": 1000})
+        await send({"type": "websocket.close", "code": 1008})
 
     def lua_macro(
         self,
@@ -923,6 +938,19 @@ class Night(Router):
             m = r.pattern.match(path)
             if m:
                 return r, m.groupdict()
+        raise NotFound()
+
+    def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, str]]:
+        path_matched = False
+        for route in self.routes:
+            match = route.pattern.match(path)
+            if not match:
+                continue
+            path_matched = True
+            if method in route.methods:
+                return route, match.groupdict()
+        if path_matched:
+            raise MethodNotAllowed(self._allowed_methods_for_path(path))
         raise NotFound()
 
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, str]) -> Response:
@@ -1010,9 +1038,7 @@ class Night(Router):
         if early is not None:
             return early
 
-        route, params = self._match(req.path)
-        if req.method not in route.methods:
-            raise MethodNotAllowed()
+        route, params = self._match_method(req.path, req.method)
         req.path_params = params
         resp = await self._call_endpoint(route.endpoint, req, params)
         resp = await self._run_after_hooks(req, resp)
@@ -1023,6 +1049,8 @@ class Night(Router):
         for r in self.routes:
             if r.pattern.match(path):
                 methods |= set(r.methods)
+        if "GET" in methods:
+            methods.add("HEAD")
         return methods
 
     async def __call__(self, scope, receive, send):
@@ -1080,10 +1108,13 @@ class Night(Router):
                         out = await t.cast(t.Awaitable, out)
                     resp = t.cast(Response, out)
                 else:
+                    error_headers = {}
+                    if isinstance(he, MethodNotAllowed) and he.allowed:
+                        error_headers["allow"] = ",".join(he.allowed)
                     if self.debug:
-                        resp = PlainTextResponse(f"{he.status} {he.detail}", status=he.status)
+                        resp = PlainTextResponse(f"{he.status} {he.detail}", status=he.status, headers=error_headers)
                     else:
-                        resp = PlainTextResponse(he.detail or "Error", status=he.status)
+                        resp = PlainTextResponse(he.detail or "Error", status=he.status, headers=error_headers)
             except Exception as e:
                 handler = self._find_error_handler(e)
                 if handler is not None:
@@ -1167,9 +1198,23 @@ def clear_client_storage(
     h = dict(headers or {})
     h.setdefault("cache-control", "no-store")
     h.setdefault("clear-site-data", '"cache", "storage"')
-    for name in cookies:
-        h.setdefault("set-cookie", f"{name}=; Max-Age=0; Path=/; HttpOnly")
-    return Response(b"", status=status, headers=h)
+    raw = [("set-cookie", f"{name}=; Max-Age=0; Path=/; HttpOnly") for name in cookies]
+    return Response(b"", status=status, headers=h, raw_headers=raw)
+
+
+def query_result(
+    data: t.Any,
+    *,
+    content_location: str | None = None,
+    cache_seconds: int | None = None,
+) -> JSONResponse:
+    """Return a cache-aware result for a QUERY endpoint."""
+    headers: dict[str, str] = {}
+    if content_location is not None:
+        headers["content-location"] = content_location
+    if cache_seconds is not None:
+        headers["cache-control"] = f"public, max-age={int(cache_seconds)}"
+    return JSONResponse(data, headers=headers)
 
 
 def stream(
