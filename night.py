@@ -63,7 +63,7 @@ class LuaUnavailable(RuntimeError):
 
 
 def _lua_macro_endpoint(source: str) -> t.Callable:
-    """Build an endpoint from a small, sandboxed Lua function.
+    """Build an endpoint for trusted Lua application code.
 
     The script must return a string, number, or a table containing ``body``,
     ``status``, and optional ``headers``.  Lua macros are deliberately
@@ -74,15 +74,21 @@ def _lua_macro_endpoint(source: str) -> t.Callable:
     except ImportError as exc:
         raise LuaUnavailable("Lua macros require the optional 'lupa' package") from exc
 
-    lua = LuaRuntime(unpack_returned_tuples=True)
-    # Remove libraries that provide filesystem, process, module-loading, or
-    # debug access.  The macro still has basic Lua values and functions.
-    lua.execute("os=nil; io=nil; debug=nil; package=nil; require=nil; dofile=nil; loadfile=nil")
-    fn = lua.execute(
-        "local f = function(req) " + source + " end; return f"
-    )
+    def make_runtime():
+        # Python bridges are disabled. This is not a security sandbox for
+        # untrusted user-supplied Lua; use a separate process/container for that.
+        runtime = LuaRuntime(
+            unpack_returned_tuples=True,
+            register_eval=False,
+            register_builtins=False,
+            max_memory=8 * 1024 * 1024,
+        )
+        runtime.execute("os=nil; io=nil; debug=nil; package=nil; require=nil; dofile=nil; loadfile=nil")
+        return runtime
 
     async def endpoint(req: Request, **params):
+        lua = make_runtime()
+        fn = lua.execute("local f = function(req) " + source + " end; return f")
         data = {
             "method": req.method,
             "path": req.path,
@@ -91,7 +97,7 @@ def _lua_macro_endpoint(source: str) -> t.Callable:
             "cookies": req.cookies,
             "params": params,
         }
-        result = fn(data)
+        result = fn(lua.table_from(data, recursive=True))
         if isinstance(result, str):
             return PlainTextResponse(result)
         if isinstance(result, (int, float)):
