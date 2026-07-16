@@ -272,6 +272,19 @@ class Request:
         return self.headers.get(name.lower(), default)
 
     @property
+    def trace_id(self) -> str:
+        value = (self.header("traceparent") or "").split("-")
+        return value[1] if len(value) == 4 and len(value[1]) == 32 else self.scope.setdefault("trace_id", os.urandom(16).hex())
+
+    @property
+    def span_id(self) -> str:
+        value = (self.header("traceparent") or "").split("-")
+        return value[2] if len(value) == 4 and len(value[2]) == 16 else self.scope.setdefault("span_id", os.urandom(8).hex())
+
+    def trace_headers(self) -> dict[str, str]:
+        return {"traceparent": f"00-{self.trace_id}-{self.span_id}-01"}
+
+    @property
     def cookies(self) -> dict[str, str]:
         if self._cookies is None:
             self._cookies = _parse_cookies(self.header("cookie"))
@@ -405,6 +418,12 @@ class WebSocket:
 
     async def send_bytes(self, data: bytes):
         await self.send({"type": "websocket.send", "bytes": bytes(data)})
+
+    async def receive_json(self) -> t.Any:
+        return json.loads(await self.receive_text())
+
+    async def send_json(self, data: t.Any):
+        await self.send_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
     async def close(self, code: int = 1000, reason: str = ""):
         event = {"type": "websocket.close", "code": int(code)}
@@ -813,6 +832,46 @@ class Night(Router):
         self.state: dict[str, t.Any] = {}
         self.extensions: dict[str, t.Any] = {}
         self.websocket_routes: list[Route] = []
+        self.rpc_methods: dict[str, t.Callable] = {}
+        self._rpc_route_installed = False
+
+    def rpc(self, name: str):
+        def decorator(fn: t.Callable):
+            self.rpc_methods[name] = fn
+            if not self._rpc_route_installed:
+                self._install_rpc_route()
+            return fn
+        return decorator
+
+    def _install_rpc_route(self):
+        self._rpc_route_installed = True
+
+        @self.post("/rpc", name="rpc")
+        async def _rpc(req: Request):
+            call = await req.json()
+            if not isinstance(call, dict) or call.get("jsonrpc") != "2.0":
+                return jsonify({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}}, status=400)
+            fn = self.rpc_methods.get(call.get("method"))
+            if fn is None:
+                return jsonify({"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": call.get("id")}, status=404)
+            try:
+                params = call.get("params", [])
+                result = fn(**params) if isinstance(params, dict) else fn(*params)
+                if inspect.isawaitable(result):
+                    result = await t.cast(t.Awaitable, result)
+                return jsonify({"jsonrpc": "2.0", "result": result, "id": call.get("id")})
+            except Exception as exc:
+                return jsonify({"jsonrpc": "2.0", "error": {"code": -32603, "message": str(exc)}, "id": call.get("id")}, status=500)
+
+    def openapi(self) -> dict[str, t.Any]:
+        paths: dict[str, dict[str, t.Any]] = {}
+        for route in self.routes:
+            path = re.sub(r"<(?:(\w+):)?(\w+)>", lambda m: "{" + m.group(2) + "}", route.raw_path)
+            item = paths.setdefault(path, {})
+            for method in route.methods:
+                if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "QUERY"}:
+                    item[method.lower()] = {"operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"), "responses": {"200": {"description": "Success"}}}
+        return {"openapi": "3.1.0", "info": {"title": "Night API", "version": "1.0.0"}, "paths": paths}
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
 
