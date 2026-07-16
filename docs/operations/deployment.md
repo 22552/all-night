@@ -29,3 +29,12 @@ Use a strong, secret `secret_key` supplied through the environment. Set a body s
 
 The built-in session and any in-memory application state are process-local. For multi-process deployments, store shared state in an external service when consistency is required.
 
+## PyPI releases
+
+The `Publish to PyPI` workflow runs when a tag matching `v*` is pushed. Add a PyPI API token as the repository Actions secret named `PYPI_API_TOKEN`; do not put it in `.env` or commit it. The workflow builds a wheel and source distribution, runs `twine check`, then uploads them.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
