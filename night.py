@@ -401,6 +401,44 @@ class StreamingResponse(Response):
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
+def sse(
+    body_iter: t.AsyncIterable[t.Any] | t.Iterable[t.Any],
+    *,
+    status: int = 200,
+    headers: t.Mapping[str, str] | None = None,
+) -> StreamingResponse:
+    """Create a Server-Sent Events response.
+
+    Items may be strings or dictionaries with ``data``, ``event``, ``id``,
+    and ``retry`` keys.  A blank line terminates each event.
+    """
+    async def encode_async():
+        async for item in t.cast(t.AsyncIterable, body_iter):
+            yield _format_sse(item)
+
+    def encode_sync():
+        for item in t.cast(t.Iterable, body_iter):
+            yield _format_sse(item)
+
+    source = encode_async() if hasattr(body_iter, "__aiter__") else encode_sync()
+    h = dict(headers or {})
+    h.setdefault("cache-control", "no-cache")
+    h.setdefault("connection", "keep-alive")
+    return StreamingResponse(source, status=status, headers=h, content_type="text/event-stream")
+
+
+def _format_sse(item: t.Any) -> str:
+    if not isinstance(item, dict):
+        item = {"data": item}
+    lines: list[str] = []
+    for key in ("id", "event", "retry"):
+        if item.get(key) is not None:
+            lines.append(f"{key}: {item[key]}")
+    data = str(item.get("data", ""))
+    lines.extend(f"data: {line}" for line in data.splitlines() or [""])
+    return "\n".join(lines) + "\n\n"
+
+
 class JSONResponse(Response):
     def __init__(
         self,
@@ -633,6 +671,16 @@ class Night(Router):
         self.error_handlers: dict[type[BaseException], ErrorHandler] = {}
         self.state: dict[str, t.Any] = {}
         self.extensions: dict[str, t.Any] = {}
+        self.startup_hooks: list[t.Callable] = []
+        self.shutdown_hooks: list[t.Callable] = []
+
+    def on_startup(self, fn: t.Callable):
+        self.startup_hooks.append(fn)
+        return fn
+
+    def on_shutdown(self, fn: t.Callable):
+        self.shutdown_hooks.append(fn)
+        return fn
 
     def register_extension(
         self,
@@ -844,6 +892,9 @@ class Night(Router):
         return methods
 
     async def __call__(self, scope, receive, send):
+        if scope.get("type") == "lifespan":
+            await self._handle_lifespan(receive, send)
+            return
         if scope.get("type") != "http":
             return
 
@@ -917,6 +968,31 @@ class Night(Router):
             await resp(scope, receive, send)
         finally:
             _current_request.reset(token)
+
+    async def _handle_lifespan(self, receive, send):
+        while True:
+            event = await receive()
+            if event["type"] == "lifespan.startup":
+                try:
+                    for fn in self.startup_hooks:
+                        result = fn()
+                        if inspect.isawaitable(result):
+                            await t.cast(t.Awaitable, result)
+                except Exception as exc:
+                    await send({"type": "lifespan.startup.failed", "message": str(exc)})
+                else:
+                    await send({"type": "lifespan.startup.complete"})
+            elif event["type"] == "lifespan.shutdown":
+                try:
+                    for fn in reversed(self.shutdown_hooks):
+                        result = fn()
+                        if inspect.isawaitable(result):
+                            await t.cast(t.Awaitable, result)
+                except Exception as exc:
+                    await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
+                else:
+                    await send({"type": "lifespan.shutdown.complete"})
+                return
 
 
 # ----------------------------
