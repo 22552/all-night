@@ -461,6 +461,66 @@ class UploadFile:
             f.write(self.data)
 
 
+class CSSRegistry:
+    def __init__(self):
+        self.rules: list[dict[str, t.Any]] = []
+        self.variables: dict[str, t.Any] = {}
+        self.keyframes: dict[str, dict[str, dict[str, t.Any]]] = {}
+
+    def add(self, rules: dict[str, t.Any]):
+        self.rules.append(rules)
+
+    def add_variables(self, variables: dict[str, t.Any]):
+        self.variables.update(variables)
+
+    def add_keyframes(self, name: str, frames: dict[str, dict[str, t.Any]]):
+        self.keyframes[name] = frames
+
+    def _decl(self, key: str, value: t.Any, minify: bool) -> str:
+        prop = re.sub(r"[A-Z]", lambda m: "-" + m.group(0).lower(), key)
+        return f"{prop}:{value}" if minify else f"  {prop}: {value};"
+
+    def _render_rules(self, selector: str, values: dict[str, t.Any], parent: str | None, minify: bool) -> list[str]:
+        current = selector if not parent else ", ".join(
+            s.replace("&", p) if "&" in s else f"{p} {s}" for p in parent.split(", ") for s in selector.split(", ")
+        )
+        declarations, nested = [], []
+        for key, value in values.items():
+            if isinstance(value, dict): nested.append((key, value))
+            else: declarations.append(self._decl(key, value, minify))
+        out = []
+        if declarations:
+            if minify: out.append(current + "{" + ";".join(x.removesuffix(";") for x in declarations) + "}")
+            else: out.append(current + " {\n" + "\n".join(declarations) + "\n}")
+        for child, child_values in nested:
+            if child.startswith("@"):
+                inner = []
+                for nested_selector, nested_values in child_values.items():
+                    inner.extend(self._render_rules(nested_selector, nested_values, None, minify))
+                out.append(child + ("{" if minify else " {\n") + ("".join(inner) if minify else "\n".join(inner)) + ("}" if minify else "\n}"))
+            else:
+                out.extend(self._render_rules(child, child_values, current, minify))
+        return out
+
+    def render(self, *, minify: bool = False) -> str:
+        chunks = []
+        if self.variables:
+            values = {f"--{k.lstrip('-')}": v for k, v in self.variables.items()}
+            chunks.extend(self._render_rules(":root", values, None, minify))
+        for rules in self.rules:
+            for selector, values in rules.items():
+                if selector.startswith("@media"):
+                    inner = []
+                    for child, child_values in values.items(): inner.extend(self._render_rules(child, child_values, None, minify))
+                    chunks.append(selector + ("{" if minify else " {\n") + ("".join(inner) if minify else "\n".join(inner)) + ("}" if minify else "\n}"))
+                else: chunks.extend(self._render_rules(selector, values, None, minify))
+        for name, frames in self.keyframes.items():
+            body = []
+            for step, values in frames.items(): body.extend(self._render_rules(step, values, None, minify))
+            chunks.append("@keyframes " + name + ("{" if minify else " {\n") + ("".join(body) if minify else "\n".join(body)) + ("}" if minify else "\n}"))
+        return ("" if minify else "\n\n").join(chunks) + ("" if minify else "\n")
+
+
 class WebSocket:
     def __init__(self, scope: dict, receive, send):
         self.scope = scope
@@ -955,11 +1015,14 @@ class Blueprint(Router):
 
 
 class Night(Router):
-    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None):
+    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, css: bool = False, css_minify: bool = False):
         super().__init__()
         self.debug = bool(debug)
         self.max_body_size = int(max_body_size)
         self.secret_key = secret_key.encode() if isinstance(secret_key, str) else secret_key
+        self.css_minify = css_minify
+        self.styles: CSSRegistry | None = None
+        if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
         self.after_hooks: list[AfterHook] = []
@@ -972,6 +1035,38 @@ class Night(Router):
 
     def test_client(self) -> TestClient:
         return TestClient(self)
+
+    def enable_css(self, *, minify: bool = False):
+        self.css_minify = minify
+        self.styles = self.styles or CSSRegistry()
+        if not any(r.raw_path == "/_night/style.css" for r in self.routes):
+            @self.get("/_night/style.css")
+            def _style():
+                return Response(self.styles.render(minify=self.css_minify), content_type="text/css; charset=utf-8", headers={"cache-control": "no-cache"})
+        return self
+
+    def css(self, rules: dict[str, t.Any]):
+        if self.styles is None: raise RuntimeError("CSS support is disabled; use Night(css=True) or enable_css()")
+        self.styles.add(rules)
+        return self
+
+    def css_variables(self, variables: dict[str, t.Any]):
+        if self.styles is None: raise RuntimeError("CSS support is disabled")
+        self.styles.add_variables(variables)
+        return self
+
+    def keyframes(self, name: str, frames: dict[str, dict[str, t.Any]]):
+        if self.styles is None: raise RuntimeError("CSS support is disabled")
+        self.styles.add_keyframes(name, frames)
+        return self
+
+    @property
+    def css_url(self) -> str:
+        if self.styles is None: raise RuntimeError("CSS support is disabled")
+        return "/_night/style.css"
+
+    def css_tag(self) -> str:
+        return f'<link rel="stylesheet" href="{self.css_url}">'
 
     def rpc(self, name: str):
         def decorator(fn: t.Callable):
