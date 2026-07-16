@@ -33,6 +33,7 @@ import dataclasses
 import datetime as _dt
 import email.utils
 import hashlib
+import hmac
 import inspect
 import json
 import mimetypes
@@ -42,8 +43,11 @@ import sys
 import traceback
 import typing as t
 import urllib.parse
+from email import policy
+from email.parser import BytesParser
 import argparse
 import runpy
+import base64
 
 # ----------------------------
 # Utilities
@@ -371,8 +375,62 @@ class Request:
         if ctype == "application/x-www-form-urlencoded":
             return QueryDict(urllib.parse.parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True))
         if ctype == "multipart/form-data":
-            raise NotImplementedError("multipart form parsing is not implemented yet")
+            form, files = self._parse_multipart(body)
+            self.scope["_files"] = files
+            return form
         return QueryDict()
+
+    async def files(self) -> dict[str, UploadFile]:
+        await self.form()
+        return self.scope.get("_files", {})
+
+    def _parse_multipart(self, body: bytes) -> tuple[QueryDict, dict[str, UploadFile]]:
+        content_type = self.header("content-type") or ""
+        message = BytesParser(policy=policy.default).parsebytes(
+            (f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode() + body
+        )
+        fields: dict[str, list[str]] = {}
+        files: dict[str, UploadFile] = {}
+        for part in message.iter_parts():
+            disposition = part.get_content_disposition()
+            name = part.get_param("name", header="content-disposition")
+            if disposition != "form-data" or not name:
+                continue
+            data = part.get_payload(decode=True) or b""
+            filename = part.get_filename()
+            if filename:
+                files[name] = UploadFile(filename, part.get_content_type(), data)
+            else:
+                fields.setdefault(name, []).append(data.decode(part.get_content_charset() or "utf-8", errors="replace"))
+        return QueryDict(fields), files
+
+
+def session() -> dict[str, t.Any]:
+    req = request()
+    if "_session" not in req.scope:
+        raw = req.cookies.get("night_session")
+        secret = req.scope.get("session_secret")
+        data = {}
+        if raw and secret and "." in raw:
+            encoded, signature = raw.rsplit(".", 1)
+            expected = hmac.new(secret, encoded.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(signature, expected):
+                try:
+                    data = json.loads(base64.urlsafe_b64decode(encoded + "=="))
+                except Exception:
+                    data = {}
+        req.scope["_session"] = data if isinstance(data, dict) else {}
+        req.scope["_session_original"] = json.dumps(req.scope["_session"], sort_keys=True)
+    return req.scope["_session"]
+
+
+def flash(message: str, category: str = "message"):
+    session().setdefault("_flashes", []).append([category, message])
+
+
+def get_flashed_messages(*, with_categories: bool = False) -> list[t.Any]:
+    values = session().pop("_flashes", [])
+    return values if with_categories else [message for _, message in values]
 
 
 class QueryDict(dict[str, list[str]]):
@@ -387,6 +445,20 @@ class QueryDict(dict[str, list[str]]):
 
     def getlist(self, key: str) -> list[str]:
         return list(super().get(key, []))
+
+
+@dataclasses.dataclass
+class UploadFile:
+    filename: str
+    content_type: str | None
+    data: bytes
+
+    async def read(self) -> bytes:
+        return self.data
+
+    def save(self, path: str):
+        with open(path, "wb") as f:
+            f.write(self.data)
 
 
 class WebSocket:
@@ -459,9 +531,64 @@ class Response:
     def add_header(self, name: str, value: str):
         self.raw_headers.append((name.lower(), value))
 
+    def set_cookie(self, key: str, value: str = "", *, max_age: int | None = None,
+                   expires: str | None = None, path: str = "/", domain: str | None = None,
+                   secure: bool = False, httponly: bool = False,
+                   samesite: str | None = None):
+        parts = [f"{key}={urllib.parse.quote(str(value), safe='')}"]
+        if max_age is not None: parts.append(f"Max-Age={int(max_age)}")
+        if expires is not None: parts.append(f"Expires={expires}")
+        if path: parts.append(f"Path={path}")
+        if domain: parts.append(f"Domain={domain}")
+        if secure: parts.append("Secure")
+        if httponly: parts.append("HttpOnly")
+        if samesite: parts.append(f"SameSite={samesite}")
+        self.add_header("set-cookie", "; ".join(parts))
+
+    def delete_cookie(self, key: str, *, path: str = "/", domain: str | None = None):
+        self.set_cookie(key, "", max_age=0, expires="Thu, 01 Jan 1970 00:00:00 GMT", path=path, domain=domain)
+
     async def __call__(self, scope, receive, send):
         await send({"type": "http.response.start", "status": self.status, "headers": self.asgi_headers()})
         await send({"type": "http.response.body", "body": self.body, "more_body": False})
+
+
+class TestResponse:
+    def __init__(self, status_code: int, headers: dict[str, str], body: bytes):
+        self.status_code, self.headers, self.data = status_code, headers, body
+
+    def get_json(self):
+        return json.loads(self.data.decode("utf-8"))
+
+    @property
+    def text(self):
+        return self.data.decode("utf-8", errors="replace")
+
+
+class TestClient:
+    def __init__(self, app: "Night"):
+        self.app, self.cookies = app, {}
+
+    def request(self, method: str, path: str, *, data: bytes | str | None = None, headers: dict[str, str] | None = None):
+        async def run():
+            sent = []
+            body = data.encode() if isinstance(data, str) else (data or b"")
+            parsed = urllib.parse.urlsplit(path)
+            hs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+            if body and not any(k == b"content-length" for k, _ in hs): hs.append((b"content-length", str(len(body)).encode()))
+            events = [{"type": "http.request", "body": body, "more_body": False}]
+            async def receive(): return events.pop(0) if events else {"type": "http.disconnect"}
+            async def send(event): sent.append(event)
+            scope = {"type": "http", "method": method.upper(), "path": parsed.path or "/", "query_string": parsed.query.encode(), "headers": hs}
+            await self.app(scope, receive, send)
+            start = next(e for e in sent if e["type"] == "http.response.start")
+            chunks = [e.get("body", b"") for e in sent if e["type"] == "http.response.body"]
+            return TestResponse(start["status"], {k.decode(): v.decode() for k, v in start["headers"]}, b"".join(chunks))
+        return asyncio.run(run())
+
+    def get(self, path, **kwargs): return self.request("GET", path, **kwargs)
+    def post(self, path, **kwargs): return self.request("POST", path, **kwargs)
+    def query(self, path, **kwargs): return self.request("QUERY", path, **kwargs)
 
 
 class StreamingResponse(Response):
@@ -821,10 +948,11 @@ class Blueprint(Router):
 
 
 class Night(Router):
-    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE):
+    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None):
         super().__init__()
         self.debug = bool(debug)
         self.max_body_size = int(max_body_size)
+        self.secret_key = secret_key.encode() if isinstance(secret_key, str) else secret_key
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
         self.after_hooks: list[AfterHook] = []
@@ -834,6 +962,9 @@ class Night(Router):
         self.websocket_routes: list[Route] = []
         self.rpc_methods: dict[str, t.Callable] = {}
         self._rpc_route_installed = False
+
+    def test_client(self) -> TestClient:
+        return TestClient(self)
 
     def rpc(self, name: str):
         def decorator(fn: t.Callable):
@@ -1148,7 +1279,10 @@ class Night(Router):
         if scope.get("type") != "http":
             return
 
-        req = Request(scope=scope, receive=receive, send=send, max_body_size=self.max_body_size)
+        request_scope = dict(scope)
+        if self.secret_key:
+            request_scope["session_secret"] = self.secret_key
+        req = Request(scope=request_scope, receive=receive, send=send, max_body_size=self.max_body_size)
         token = _current_request.set(req)
         try:
 
@@ -1221,6 +1355,11 @@ class Night(Router):
                     resp.headers["content-length"] = content_length
                 else:
                     resp.headers.pop("content-length", None)
+
+            if self.secret_key and "_session" in req.scope:
+                encoded = base64.urlsafe_b64encode(json.dumps(req.scope["_session"], separators=(",", ":")).encode()).decode().rstrip("=")
+                signature = hmac.new(self.secret_key, encoded.encode(), hashlib.sha256).hexdigest()
+                resp.set_cookie("night_session", encoded + "." + signature, httponly=True, secure=False, samesite="Lax")
 
             await resp(scope, receive, send)
         finally:
