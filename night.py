@@ -234,42 +234,86 @@ class MethodNotAllowed(HTTPError):
 
 
 class ValidationError(HTTPError):
-    def __init__(self, detail: str = "Invalid request body"):
+    def __init__(self, errors: list[dict[str, str]], detail: str = "Invalid request body"):
+        self.errors = errors
         super().__init__(422, detail)
 
 
-def _validate_dataclass(model: type, value: t.Any) -> t.Any:
+def _validate_value(value: t.Any, typ: t.Any, field: str, errors: list[dict[str, str]]) -> t.Any:
+    origin, args = t.get_origin(typ), t.get_args(typ)
+    if origin in (t.Union, types.UnionType) and type(None) in args:
+        if value is None:
+            return None
+        typ = next((item for item in args if item is not type(None)), t.Any)
+        origin, args = t.get_origin(typ), t.get_args(typ)
+    if origin is list:
+        if not isinstance(value, list):
+            errors.append({"field": field, "message": "Expected a list"})
+            return value
+        item_type = args[0] if args else t.Any
+        return [_validate_value(item, item_type, f"{field}[{index}]", errors) for index, item in enumerate(value)]
+    if dataclasses.is_dataclass(typ):
+        return _validate_dataclass(typ, value, errors, field)
+    try:
+        if typ is bool and not isinstance(value, bool):
+            raise ValueError
+        if typ is int and isinstance(value, bool):
+            raise ValueError
+        if typ in (int, float, str, bool) and not isinstance(value, typ):
+            value = typ(value)
+    except (TypeError, ValueError):
+        errors.append({"field": field, "message": f"Expected {getattr(typ, '__name__', str(typ))}"})
+    return value
+
+
+def _validate_dataclass(model: type, value: t.Any, errors: list[dict[str, str]] | None = None, prefix: str = "") -> t.Any:
+    errors = errors if errors is not None else []
+    error_count = len(errors)
     if not dataclasses.is_dataclass(model) or not isinstance(value, dict):
-        raise ValidationError("Request body must be a JSON object")
+        errors.append({"field": prefix or "body", "message": "Expected an object"})
+        if prefix:
+            return value
+        raise ValidationError(errors)
     hints = t.get_type_hints(model)
     result: dict[str, t.Any] = {}
     for field in dataclasses.fields(model):
+        name = f"{prefix}.{field.name}" if prefix else field.name
         if field.name not in value:
             if field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING:
                 continue
-            raise ValidationError(f"Missing field: {field.name}")
-        raw = value[field.name]
-        typ = hints.get(field.name, field.type)
-        origin = t.get_origin(typ)
-        args = t.get_args(typ)
-        if origin in (t.Union, types.UnionType) and type(None) in args:
-            typ = next((x for x in args if x is not type(None)), t.Any)
-            if raw is None:
-                result[field.name] = None
-                continue
-        try:
-            if typ is bool and not isinstance(raw, bool):
-                raise ValueError
-            if typ is int and isinstance(raw, bool):
-                raise ValueError
-            if typ in (int, float, str, bool) and not isinstance(raw, typ):
-                raw = typ(raw)
-            elif dataclasses.is_dataclass(typ):
-                raw = _validate_dataclass(typ, raw)
-        except (TypeError, ValueError):
-            raise ValidationError(f"Invalid field: {field.name}")
-        result[field.name] = raw
+            errors.append({"field": name, "message": "Field is required"})
+            continue
+        result[field.name] = _validate_value(value[field.name], hints.get(field.name, field.type), name, errors)
+    if not prefix and errors:
+        raise ValidationError(errors)
+    if prefix and len(errors) > error_count:
+        return value
     return model(**result)
+
+
+def _dataclass_schema(model: type) -> dict[str, t.Any]:
+    primitive = {str: "string", int: "integer", float: "number", bool: "boolean"}
+    if not dataclasses.is_dataclass(model):
+        return {"type": "object"}
+    properties, required = {}, []
+    for field in dataclasses.fields(model):
+        typ = t.get_type_hints(model).get(field.name, field.type)
+        origin, args = t.get_origin(typ), t.get_args(typ)
+        nullable = origin in (t.Union, types.UnionType) and type(None) in args
+        if nullable: typ = next(item for item in args if item is not type(None))
+        if t.get_origin(typ) is list:
+            schema = {"type": "array", "items": _dataclass_schema(t.get_args(typ)[0])}
+        elif dataclasses.is_dataclass(typ):
+            schema = _dataclass_schema(typ)
+        else:
+            schema = {"type": primitive.get(typ, "object")}
+        if nullable: schema["type"] = [schema.get("type", "object"), "null"]
+        properties[field.name] = schema
+        if field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING:
+            required.append(field.name)
+    out = {"type": "object", "properties": properties}
+    if required: out["required"] = required
+    return out
 
 
 def csrf_token() -> str:
@@ -1186,6 +1230,18 @@ class Night(Router):
                 return Response(self._css_cache, content_type="text/css; charset=utf-8", headers={"cache-control": "no-cache"})
         return self
 
+    def enable_csrf_endpoint(self, path: str = "/csrf-token"):
+        """Expose a JSON endpoint for SPA CSRF token acquisition."""
+        if not path.startswith("/"):
+            raise ValueError("CSRF endpoint path must start with '/'")
+        if any(route.raw_path == path for route in self.routes):
+            raise ValueError(f"Route already exists: {path}")
+
+        @self.get(path, name="csrf_token")
+        def _csrf_token_endpoint():
+            return {"csrf_token": csrf_token()}
+        return self
+
     def css(self, rules: dict[str, t.Any]):
         if self.styles is None: raise RuntimeError("CSS support is disabled; use Night(css=True) or enable_css()")
         self.styles.add(rules)
@@ -1247,7 +1303,11 @@ class Night(Router):
             item = paths.setdefault(path, {})
             for method in route.methods:
                 if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "QUERY"}:
-                    item[method.lower()] = {"operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"), "responses": {"200": {"description": "Success"}}}
+                    operation: dict[str, t.Any] = {"operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"), "responses": {"200": {"description": "Success"}}}
+                    body_model = route.body_model or getattr(route.endpoint, "__night_body_model__", None)
+                    if body_model is not None:
+                        operation["requestBody"] = {"required": True, "content": {"application/json": {"schema": _dataclass_schema(body_model)}}}
+                    item[method.lower()] = operation
         return {"openapi": "3.1.0", "info": {"title": "Night API", "version": "1.0.0"}, "paths": paths}
 
     def on_startup(self, fn: t.Callable):
@@ -1595,7 +1655,9 @@ class Night(Router):
                     error_headers = {}
                     if isinstance(he, MethodNotAllowed) and he.allowed:
                         error_headers["allow"] = ",".join(he.allowed)
-                    if self.debug:
+                    if isinstance(he, ValidationError):
+                        resp = JSONResponse({"errors": he.errors}, status=he.status, headers=error_headers)
+                    elif self.debug:
                         resp = PlainTextResponse(f"{he.status} {he.detail}", status=he.status, headers=error_headers)
                     else:
                         resp = PlainTextResponse(he.detail or "Error", status=he.status, headers=error_headers)
