@@ -1140,54 +1140,8 @@ class Blueprint(Router):
         return self
 
 
-def _dataclass_schema(model: type) -> dict[str, t.Any]:
-    """Small OpenAPI schema generator for Night's dataclass body models."""
-    if not dataclasses.is_dataclass(model):
-        return {"type": "object"}
-    hints = t.get_type_hints(model)
-    primitive = {str: "string", int: "integer", float: "number", bool: "boolean"}
-    properties: dict[str, t.Any] = {}
-    required: list[str] = []
-    for field in dataclasses.fields(model):
-        typ = hints.get(field.name, field.type)
-        origin, args = t.get_origin(typ), t.get_args(typ)
-        nullable = origin in (t.Union, types.UnionType) and type(None) in args
-        if nullable:
-            typ = next((value for value in args if value is not type(None)), t.Any)
-        schema = {"type": primitive.get(typ, "object")}
-        if nullable:
-            schema["type"] = [schema["type"], "null"]
-        properties[field.name] = schema
-        if field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING:
-            required.append(field.name)
-    schema: dict[str, t.Any] = {"type": "object", "properties": properties}
-    if required:
-        schema["required"] = required
-    return schema
-
-
-def _docs_page(openapi_path: str) -> str:
-    escaped_path = json.dumps(openapi_path)
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Night API Docs</title><style>
-body{{margin:0;background:#0d1117;color:#e6edf3;font:15px system-ui,sans-serif}}main{{max-width:960px;margin:auto;padding:32px 20px}}h1{{margin:0}}a{{color:#7cbeff}}.muted{{color:#8b949e}}.route{{margin:14px 0;padding:16px;border:1px solid #30363d;border-radius:9px;background:#161b22}}.method{{display:inline-block;min-width:64px;font-weight:700;color:#79c0ff}}code{{color:#c9d1d9}}pre{{padding:12px;overflow:auto;background:#0d1117;border-radius:6px}}</style></head>
-<body><main><h1>Night API</h1><p class="muted">Generated from registered routes · <a id="spec">OpenAPI JSON</a></p><div id="routes">Loading…</div></main>
-<script>
-const specPath={escaped_path}; document.querySelector('#spec').href=specPath;
-const esc=s=>String(s).replace(/[&<>]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]));
-fetch(specPath).then(r=>r.json()).then(spec=>{{
- const root=document.querySelector('#routes'); root.textContent='';
- for(const [path,item] of Object.entries(spec.paths)) for(const [method,op] of Object.entries(item)){{
-  const body=op.requestBody?.content?.['application/json']?.schema;
-  root.insertAdjacentHTML('beforeend',`<section class="route"><span class="method">${{esc(method.toUpperCase())}}</span> <code>${{esc(path)}}</code>${{op.summary?`<p>${{esc(op.summary)}}</p>`:''}}${{body?`<pre>${{esc(JSON.stringify(body,null,2))}}</pre>`:''}}</section>`);
- }}
-}}).catch(err=>document.querySelector('#routes').textContent='Unable to load API description: '+err);
-</script></body></html>'''
-
-
 class Night(Router):
-    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, session_secure: bool | None = None, css: bool = False, css_minify: bool = False, docs: bool = True):
+    def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, session_secure: bool | None = None, css: bool = False, css_minify: bool = False):
         super().__init__()
         self.debug = bool(debug)
         self.max_body_size = int(max_body_size)
@@ -1210,7 +1164,6 @@ class Night(Router):
         self._rpc_route_installed = False
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
-        if docs: self.enable_docs()
 
     def test_client(self) -> TestClient:
         return TestClient(self)
@@ -1231,21 +1184,6 @@ class Night(Router):
                 if self._css_cache is None:
                     self._css_cache = self.styles.render(minify=self.css_minify)
                 return Response(self._css_cache, content_type="text/css; charset=utf-8", headers={"cache-control": "no-cache"})
-        return self
-
-    def enable_docs(self, *, path: str = "/docs", openapi_path: str = "/openapi.json"):
-        """Serve a dependency-free API reference and its OpenAPI document."""
-        if not path.startswith("/") or not openapi_path.startswith("/"):
-            raise ValueError("Documentation paths must start with '/'")
-        if not any(r.raw_path == openapi_path for r in self.routes):
-            @self.get(openapi_path, name="openapi")
-            def _openapi():
-                return JSONResponse(self.openapi())
-        if not any(r.raw_path == path for r in self.routes):
-            @self.get(path, name="docs")
-            def _docs():
-                page = _docs_page(openapi_path)
-                return HTMLResponse(page)
         return self
 
     def css(self, rules: dict[str, t.Any]):
@@ -1309,20 +1247,7 @@ class Night(Router):
             item = paths.setdefault(path, {})
             for method in route.methods:
                 if method in {"GET", "POST", "PUT", "PATCH", "DELETE", "QUERY"}:
-                    operation: dict[str, t.Any] = {
-                        "operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"),
-                        "responses": {"200": {"description": "Success"}},
-                    }
-                    description = inspect.getdoc(route.endpoint)
-                    if description:
-                        operation["summary"] = description.splitlines()[0]
-                        operation["description"] = description
-                    if route.body_model is not None:
-                        operation["requestBody"] = {
-                            "required": True,
-                            "content": {"application/json": {"schema": _dataclass_schema(route.body_model)}},
-                        }
-                    item[method.lower()] = operation
+                    item[method.lower()] = {"operationId": route.name or getattr(route.endpoint, "__name__", "endpoint"), "responses": {"200": {"description": "Success"}}}
         return {"openapi": "3.1.0", "info": {"title": "Night API", "version": "1.0.0"}, "paths": paths}
 
     def on_startup(self, fn: t.Callable):
