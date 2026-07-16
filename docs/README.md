@@ -91,7 +91,7 @@ def create_user(req: Request, user: UserCreate):
     return {"name": user.name, "age": user.age}
 ```
 
-必須フィールド、基本型、`Optional`、単一のネストdataclassを扱います。`list[Model]` などのコンテナ型は現時点では自動検証しません。
+必須フィールド、基本型、`Optional`、ネストdataclass、`list[T]`（`list[Model]` を含む）を扱います。エラーはすべて `{"errors": [{"field": "...", "message": "..."}]}` の形で422として返ります。
 
 ## Session / CSRF / flash
 
