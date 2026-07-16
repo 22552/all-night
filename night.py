@@ -871,6 +871,14 @@ class Route:
     endpoint: t.Callable
     raw_path: str
     name: str | None = None
+    signature: inspect.Signature | None = dataclasses.field(default=None, init=False)
+
+    def __post_init__(self):
+        try:
+            self.signature = inspect.signature(self.endpoint)
+            setattr(self.endpoint, "__night_signature__", self.signature)
+        except Exception:
+            self.signature = None
 
 
 def compile_path(path: str) -> tuple[re.Pattern, list[str]]:
@@ -1059,6 +1067,7 @@ class Night(Router):
         self.session_secure = session_secure
         self.css_minify = css_minify
         self.styles: CSSRegistry | None = None
+        self._css_cache: str | None = None
         if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
@@ -1081,22 +1090,27 @@ class Night(Router):
         if not any(r.raw_path == "/_night/style.css" for r in self.routes):
             @self.get("/_night/style.css")
             def _style():
-                return Response(self.styles.render(minify=self.css_minify), content_type="text/css; charset=utf-8", headers={"cache-control": "no-cache"})
+                if self._css_cache is None:
+                    self._css_cache = self.styles.render(minify=self.css_minify)
+                return Response(self._css_cache, content_type="text/css; charset=utf-8", headers={"cache-control": "no-cache"})
         return self
 
     def css(self, rules: dict[str, t.Any]):
         if self.styles is None: raise RuntimeError("CSS support is disabled; use Night(css=True) or enable_css()")
         self.styles.add(rules)
+        self._css_cache = None
         return self
 
     def css_variables(self, variables: dict[str, t.Any]):
         if self.styles is None: raise RuntimeError("CSS support is disabled")
         self.styles.add_variables(variables)
+        self._css_cache = None
         return self
 
     def keyframes(self, name: str, frames: dict[str, dict[str, t.Any]]):
         if self.styles is None: raise RuntimeError("CSS support is disabled")
         self.styles.add_keyframes(name, frames)
+        self._css_cache = None
         return self
 
     @property
@@ -1311,7 +1325,9 @@ class Night(Router):
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, str]) -> Response:
         # Convert params types based on annotations where possible
         try:
-            sig = inspect.signature(fn)
+            sig = getattr(fn, "__night_signature__", None)
+            if sig is None:
+                sig = inspect.signature(fn)
         except Exception:
             sig = None
 
@@ -1496,13 +1512,16 @@ class Night(Router):
                     resp.headers.pop("content-length", None)
 
             if self.secret_key and "_session" in req.scope:
-                encoded = base64.urlsafe_b64encode(json.dumps(req.scope["_session"], separators=(",", ":")).encode()).decode().rstrip("=")
-                signature = hmac.new(self.secret_key, encoded.encode(), hashlib.sha256).hexdigest()
-                if len(encoded) + len(signature) + len("night_session=; Path=/; HttpOnly; SameSite=Lax") > MAX_SESSION_COOKIE_SIZE:
-                    resp = PlainTextResponse("Session data exceeds cookie size limit", status=500)
-                else:
-                    secure = self.session_secure if self.session_secure is not None else scope.get("scheme") == "https"
-                    resp.set_cookie("night_session", encoded + "." + signature, httponly=True, secure=secure, samesite="Lax")
+                current = json.dumps(req.scope["_session"], sort_keys=True, separators=(",", ":"))
+                original = req.scope.get("_session_original", "")
+                if current != original or req.scope.get("_session_regenerated"):
+                    encoded = base64.urlsafe_b64encode(current.encode()).decode().rstrip("=")
+                    signature = hmac.new(self.secret_key, encoded.encode(), hashlib.sha256).hexdigest()
+                    if len(encoded) + len(signature) + len("night_session=; Path=/; HttpOnly; SameSite=Lax") > MAX_SESSION_COOKIE_SIZE:
+                        resp = PlainTextResponse("Internal Server Error" if not self.debug else "Session data exceeds cookie size limit", status=500)
+                    else:
+                        secure = self.session_secure if self.session_secure is not None else scope.get("scheme") == "https"
+                        resp.set_cookie("night_session", encoded + "." + signature, httponly=True, secure=secure, samesite="Lax")
 
             await resp(scope, receive, send)
         finally:
