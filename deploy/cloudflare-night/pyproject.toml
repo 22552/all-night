@@ -1,0 +1,14 @@
+[project]
+name = "night-cloudflare-deploy"
+version = "0.1.0"
+description = "One-click Cloudflare Python Worker demo for the Night framework"
+requires-python = ">=3.13"
+dependencies = [
+  "all-night @ git+https://github.com/22552/all-night.git@9a241910b8f888a67720c8b80bde1b139604faff",
+]
+
+[dependency-groups]
+dev = [
+  "workers-py",
+  "workers-runtime-sdk",
+]

@@ -1,0 +1,8 @@
+{
+  "name": "night-cloudflare-deploy",
+  "private": true,
+  "scripts": {
+    "build": "python -m pip install uv && uv sync",
+    "deploy": "uv run pywrangler deploy"
+  }
+}
