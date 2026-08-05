@@ -20,4 +20,4 @@ jobs:
       - name: Run portable runtime tests
         run: python -m pytest -q test_portable_runtime.py test_web_runtime.py test_web_runtime_demo.py
       - name: Run Web runtime demo
-        run: python examples/web_runtime_demo.py
+        run: python -m examples.web_runtime_demo
