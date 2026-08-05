@@ -2,6 +2,6 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "night-python-worker",
   "main": "src/entry.py",
-  "compatibility_date": "2026-08-05",
-  "compatibility_flags": ["python_workers", "nodejs_compat"]
+  "compatibility_date": "2025-12-01",
+  "compatibility_flags": ["python_workers"]
 }

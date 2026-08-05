@@ -1,6 +1,6 @@
-# Deploy Night to Cloudflare
+# Deploy Night ToDo to Cloudflare
 
-Deploy a small Night application to **Cloudflare Python Workers** from your browser.
+Deploy a small **Night ToDo application** to Cloudflare Python Workers from your browser.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/22552/all-night/tree/main/deploy/cloudflare-night)
 
@@ -8,38 +8,44 @@ Click the button above, sign in to Cloudflare, choose the repository and Worker 
 
 ## What gets deployed
 
-The demo exposes:
+The demo includes a browser UI and a JSON API:
 
-- `GET /` — runtime information
-- `GET /hello/<name>` — path parameter example
-- `POST /echo` — echoes a JSON request body
+- `GET /` — ToDo web UI
+- `GET /api/todos` — list todos
+- `POST /api/todos` — add a todo
+- `PATCH /api/todos/<id>` — rename or toggle a todo
+- `DELETE /api/todos/<id>` — delete a todo
 
-The template is self-contained inside this directory so Cloudflare's subdirectory deploy flow can clone it as its own project.
+Todos are intentionally stored in Worker memory for this runtime demo. They can disappear when the isolate is restarted; use D1, KV, Durable Objects, or another persistent store for a real application.
 
 ## Build and deploy
 
-Workers Builds reads `package.json` and uses:
+Workers Builds assembles the self-contained Python modules and deploys directly through Wrangler:
 
 ```bash
-python -m pip install uv && uv sync
-uv run pywrangler deploy
+npm run build
+npm run deploy
 ```
 
-Python packages are declared in `pyproject.toml`. The Night framework is pinned to a known repository commit so the template remains reproducible.
+The deploy command is:
+
+```bash
+npx wrangler deploy
+```
+
+The template currently pins `compatibility_date` to `2025-12-01`. During testing, newer compatibility dates triggered a Cloudflare-side Pyodide initialization failure (`Dynamic require of "fs" is not supported`) even for a minimal Python Worker, while the older date deployed successfully.
 
 ## Local development
 
-If you have Python 3.13+, Node.js, and `uv` installed:
+After running the build step, you can use Wrangler directly:
 
 ```bash
-uv sync
-uv run pywrangler dev
+npm run build
+npx wrangler dev
 ```
-
-Then open the local Worker URL shown by Pywrangler.
 
 ## Notes
 
-- Python Workers currently require the `python_workers` compatibility flag.
-- Streaming/SSE and WebSockets are not part of this first portable adapter demo.
-- The official Deploy to Cloudflare flow creates a copy of the template in your GitHub or GitLab account and configures Workers Builds for it.
+- The template uses the `python_workers` compatibility flag.
+- Night, the portable runtime adapter, and the Web runtime adapter are vendored into `src/` during the build.
+- Streaming/SSE and WebSockets are not part of this first portable Web adapter demo.
