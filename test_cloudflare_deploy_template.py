@@ -10,28 +10,37 @@ ROOT = pathlib.Path(__file__).parent / "deploy" / "cloudflare-night"
 def test_cloudflare_deploy_template_config():
     config = json.loads((ROOT / "wrangler.jsonc").read_text())
     assert config["main"] == "src/entry.py"
-    assert "python_workers" in config["compatibility_flags"]
+    assert config["compatibility_date"] == "2025-12-01"
+    assert config["compatibility_flags"] == ["python_workers"]
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert project["project"]["requires-python"] == ">=3.13"
     assert project["project"]["dependencies"] == []
-    assert "workers-py" in project["dependency-groups"]["dev"]
 
     package = json.loads((ROOT / "package.json").read_text())
     build = package["scripts"]["build"]
     deploy = package["scripts"]["deploy"]
-    assert "python -m pip install uv" in build
     assert "raw.githubusercontent.com/22552/all-night" in build
     assert "-o src/night.py" in build
     assert "cp portable_runtime.py src/portable_runtime.py" in build
     assert "cp web_runtime.py src/web_runtime.py" in build
-    assert deploy == "uvx --from workers-py pywrangler deploy"
+    assert deploy == "npx wrangler deploy"
 
 
 def test_cloudflare_deploy_template_python_compiles():
     py_compile.compile(str(ROOT / "portable_runtime.py"), doraise=True)
     py_compile.compile(str(ROOT / "web_runtime.py"), doraise=True)
     py_compile.compile(str(ROOT / "src" / "entry.py"), doraise=True)
+
+
+def test_cloudflare_todo_routes_are_present():
+    entry = (ROOT / "src" / "entry.py").read_text()
+    assert '@app.get("/")' in entry
+    assert '@app.get("/api/todos")' in entry
+    assert '@app.post("/api/todos")' in entry
+    assert '@app.patch("/api/todos/<int:id>")' in entry
+    assert '@app.delete("/api/todos/<int:id>")' in entry
+    assert "Night ToDo" in entry
 
 
 def test_cloudflare_deploy_button_points_to_template():
