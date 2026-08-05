@@ -14,9 +14,14 @@ def test_cloudflare_deploy_template_config():
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert project["project"]["requires-python"] == ">=3.13"
-    assert any("all-night" in dep for dep in project["project"]["dependencies"])
+    assert project["project"]["dependencies"] == []
 
     package = json.loads((ROOT / "package.json").read_text())
+    build = package["scripts"]["build"]
+    assert "raw.githubusercontent.com/22552/all-night" in build
+    assert "-o src/night.py" in build
+    assert "cp portable_runtime.py src/portable_runtime.py" in build
+    assert "cp web_runtime.py src/web_runtime.py" in build
     assert "pywrangler deploy" in package["scripts"]["deploy"]
 
 
