@@ -3,5 +3,5 @@
   "name": "night-python-worker",
   "main": "src/entry.py",
   "compatibility_date": "2026-08-05",
-  "compatibility_flags": ["python_workers"]
+  "compatibility_flags": ["python_workers", "nodejs_compat"]
 }
