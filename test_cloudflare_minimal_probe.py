@@ -15,6 +15,11 @@ def test_minimal_probe_config():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert project["project"]["dependencies"] == []
     assert project["project"]["requires-python"] == ">=3.13"
+    assert "workers-py>=1.72.0" in project["dependency-groups"]["dev"]
+
+    package = json.loads((ROOT / "package.json").read_text())
+    assert "uv>=0.29.8" in package["scripts"]["build"]
+    assert package["scripts"]["deploy"] == "uvx --from 'workers-py>=1.72.0' pywrangler deploy"
 
 
 def test_minimal_probe_compiles():
