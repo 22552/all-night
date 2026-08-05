@@ -15,17 +15,17 @@ def test_cloudflare_deploy_template_config():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert project["project"]["requires-python"] == ">=3.13"
     assert project["project"]["dependencies"] == []
-    assert "workers-py>=1.72.0" in project["dependency-groups"]["dev"]
+    assert "workers-py" in project["dependency-groups"]["dev"]
 
     package = json.loads((ROOT / "package.json").read_text())
     build = package["scripts"]["build"]
     deploy = package["scripts"]["deploy"]
-    assert "uv>=0.29.8" in build
+    assert "python -m pip install uv" in build
     assert "raw.githubusercontent.com/22552/all-night" in build
     assert "-o src/night.py" in build
     assert "cp portable_runtime.py src/portable_runtime.py" in build
     assert "cp web_runtime.py src/web_runtime.py" in build
-    assert "uvx --from 'workers-py>=1.72.0' pywrangler deploy" == deploy
+    assert deploy == "uvx --from workers-py pywrangler deploy"
 
 
 def test_cloudflare_deploy_template_python_compiles():

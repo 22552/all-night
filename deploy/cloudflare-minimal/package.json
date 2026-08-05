@@ -2,7 +2,7 @@
   "name": "night-cloudflare-minimal-probe",
   "private": true,
   "scripts": {
-    "build": "python -m pip install 'uv>=0.29.8'",
-    "deploy": "uvx --from 'workers-py>=1.72.0' pywrangler deploy"
+    "build": "python -m pip install uv",
+    "deploy": "uvx --from workers-py pywrangler deploy"
   }
 }
