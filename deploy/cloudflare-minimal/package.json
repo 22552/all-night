@@ -1,0 +1,8 @@
+{
+  "name": "night-cloudflare-minimal-probe",
+  "private": true,
+  "scripts": {
+    "build": "python -m pip install uv && uv sync",
+    "deploy": "uv run pywrangler deploy"
+  }
+}
