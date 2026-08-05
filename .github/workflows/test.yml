@@ -21,3 +21,8 @@ jobs:
         run: python -m pytest -q test_portable_runtime.py test_web_runtime.py test_web_runtime_demo.py test_cloudflare_deploy_template.py test_cloudflare_minimal_probe.py
       - name: Run Web runtime demo
         run: python -m examples.web_runtime_demo
+      - name: Build Cloudflare Night template
+        run: |
+          cd deploy/cloudflare-night
+          npm run build
+          python -m py_compile src/night.py src/portable_runtime.py src/web_runtime.py src/entry.py
