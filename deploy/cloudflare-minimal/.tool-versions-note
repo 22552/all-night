@@ -1,0 +1,4 @@
+Cloudflare Python Workers minimum tool versions verified 2026-08-06:
+workers-py >= 1.72.0
+uv >= 0.29.8
+wrangler >= 4.64.0
