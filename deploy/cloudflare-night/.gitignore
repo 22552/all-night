@@ -1,0 +1,4 @@
+.venv/
+.wrangler/
+__pycache__/
+*.pyc
