@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "night-python-minimal-probe",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["python_workers"]
+}
