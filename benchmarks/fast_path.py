@@ -17,6 +17,7 @@ each request.
 """
 
 import asyncio
+import logging
 from pathlib import Path
 import statistics
 import sys
@@ -203,6 +204,7 @@ def build_robyn(*, many_dynamic: bool):
     from robyn import Robyn
     from robyn.testing import TestClient
 
+    logging.getLogger("robyn.logger").setLevel(logging.CRITICAL)
     app = Robyn(__file__)
     for index in range(200):
         app.get(f"/static/{index}")(_robyn_static_handler(index))
