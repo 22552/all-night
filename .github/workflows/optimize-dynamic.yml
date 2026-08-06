@@ -21,7 +21,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Apply optimization
-        run: python tools/optimize_dynamic.py
+        run: |
+          rm -f pytest-debug.txt
+          python tools/optimize_dynamic.py
       - name: Validate syntax
         run: python -m py_compile night.py
       - name: Run tests and capture failures
