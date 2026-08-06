@@ -1,0 +1,119 @@
+.........FF.........                                                     [100%]
+=================================== FAILURES ===================================
+_____________ test_dynamic_routes_fall_back_and_convert_int_params _____________
+
+    def test_dynamic_routes_fall_back_and_convert_int_params():
+        app = Night()
+    
+        @app.get("/users/<int:id>")
+        def user(id: int):
+            return {"id": id}
+    
+        route, params = app._match_method("/users/42", "GET")
+>       response = asyncio.run(app._call_endpoint(route.endpoint, _request("/users/42"), params))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_fast_paths.py:64: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/runners.py:196: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/base_events.py:725: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+night.py:1800: in _call_endpoint
+    return await self._call_route(route, req, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <night.Night object at 0x7fe7144849d0>
+route = <night._EndpointRoute object at 0x7fe7144e6660>
+req = Request(scope={'type': 'http', 'http_version': '1.1', 'method': 'GET', 'scheme': 'http', 'path': '/users/42', 'raw_pat...one, _json=None, _json_loaded=False, _query=None, _cookies=None, path_params={}, max_body_size=16777216, _headers=None)
+params = {'id': 42}
+
+    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        plan = route._night_plan
+        kwargs = params.copy() if params else {}
+    
+        if plan.body_model is not None:
+            payload = await req.json()
+            validated = _validate_dataclass(plan.body_model, payload)
+            target = next((name for name in plan.body_candidates if name not in kwargs), None)
+            if target is not None:
+                kwargs[target] = validated
+            else:
+                kwargs.setdefault("data", validated)
+    
+        fn = route.endpoint
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+            result = fn(req=req, **kwargs)
+        elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+            result = fn(req, **kwargs)
+        else:
+>           result = fn(**kwargs)
+                     ^^^^^^^^^^^^
+E           TypeError: test_dynamic_routes_fall_back_and_convert_int_params.<locals>.user() got multiple values for argument 'id'
+
+night.py:1780: TypeError
+___________ test_request_injection_plan_is_compiled_at_registration ____________
+
+    def test_request_injection_plan_is_compiled_at_registration():
+        app = Night()
+    
+        @app.get("/method")
+        def method(req: Request):
+            return req.method
+    
+        assert method in app._endpoint_plans
+        route, params = app._match_method("/method", "GET")
+>       response = asyncio.run(app._call_endpoint(route.endpoint, _request("/method"), params))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_fast_paths.py:78: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/runners.py:196: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/runners.py:119: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.14/x64/lib/python3.13/asyncio/base_events.py:725: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+night.py:1800: in _call_endpoint
+    return await self._call_route(route, req, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <night.Night object at 0x7fe714484e90>
+route = <night._EndpointRoute object at 0x7fe7144e63c0>
+req = Request(scope={'type': 'http', 'http_version': '1.1', 'method': 'GET', 'scheme': 'http', 'path': '/method', 'raw_path'...one, _json=None, _json_loaded=False, _query=None, _cookies=None, path_params={}, max_body_size=16777216, _headers=None)
+params = {}
+
+    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        plan = route._night_plan
+        kwargs = params.copy() if params else {}
+    
+        if plan.body_model is not None:
+            payload = await req.json()
+            validated = _validate_dataclass(plan.body_model, payload)
+            target = next((name for name in plan.body_candidates if name not in kwargs), None)
+            if target is not None:
+                kwargs[target] = validated
+            else:
+                kwargs.setdefault("data", validated)
+    
+        fn = route.endpoint
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+>           result = fn(req=req, **kwargs)
+                     ^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: test_request_injection_plan_is_compiled_at_registration.<locals>.method() got multiple values for argument 'req'
+
+night.py:1776: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_fast_paths.py::test_dynamic_routes_fall_back_and_convert_int_params - TypeError: test_dynamic_routes_fall_back_and_convert_int_params.<locals>.user() got multiple values for argument 'id'
+FAILED tests/test_fast_paths.py::test_request_injection_plan_is_compiled_at_registration - TypeError: test_request_injection_plan_is_compiled_at_registration.<locals>.method() got multiple values for argument 'req'
+2 failed, 18 passed in 0.78s
