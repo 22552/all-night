@@ -25,7 +25,7 @@ jobs:
       - name: Validate
         run: |
           python -m py_compile night.py
-          python -m pip install pytest
+          python -m pip install pytest Flask robyn
           python -m pytest -q tests
           python benchmarks/fast_path.py
       - name: Commit optimized Night
@@ -33,5 +33,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add night.py
-          git commit -m "Add prefix-indexed Python dynamic router"
+          git commit -m "Push pure-Python routing fast paths"
           git push origin HEAD:perf/python-limit-router
