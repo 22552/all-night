@@ -1,0 +1,44 @@
+name: Apply Cloudflare Runtime RPC
+
+on:
+  push:
+    branches: ["feat/cloudflare-runtime-rpc"]
+    paths:
+      - "tools/apply_cloudflare_runtime_rpc.py"
+      - ".github/workflows/apply-cloudflare-runtime-rpc.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/cloudflare-runtime-rpc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply migration
+        run: python tools/apply_cloudflare_runtime_rpc.py
+      - name: Validate Python
+        run: |
+          python -m py_compile night.py deploy/cloudflare-night/src/entry.py
+          python -m pip install pytest Flask robyn
+          python -m pytest -q tests
+          python benchmarks/fast_path.py
+      - name: Validate Cloudflare template
+        run: |
+          cd deploy/cloudflare-night
+          npm run build
+          python -m py_compile src/night.py src/entry.py
+          test ! -e portable_runtime.py
+          test ! -e web_runtime.py
+      - name: Commit migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add night.py deploy/cloudflare-night .github/workflows/test.yml
+          git commit -m "Embed Cloudflare runtime bridge and Workers RPC"
+          git push origin HEAD:feat/cloudflare-runtime-rpc
