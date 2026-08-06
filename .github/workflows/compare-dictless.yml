@@ -1,0 +1,94 @@
+name: Compare Dictless Router
+
+on:
+  push:
+    branches: ["perf/dictless-path-params"]
+    paths:
+      - ".github/workflows/compare-dictless.yml"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compare main and branch in one process
+        run: |
+          git show origin/main:night.py > /tmp/night_main.py
+          python - <<'PY'
+          import asyncio
+          import importlib.util
+          import statistics
+          import sys
+          import time
+
+          def load(name, path):
+              spec = importlib.util.spec_from_file_location(name, path)
+              mod = importlib.util.module_from_spec(spec)
+              sys.modules[name] = mod
+              spec.loader.exec_module(mod)
+              return mod
+
+          base = load("night_main_ab", "/tmp/night_main.py")
+          opt = load("night_opt_ab", "night.py")
+
+          async def recv():
+              return {"type": "http.request", "body": b"", "more_body": False}
+
+          def request(mod, path):
+              return mod.Request(
+                  scope={
+                      "type": "http", "http_version": "1.1", "method": "GET",
+                      "scheme": "http", "path": path, "raw_path": path.encode(),
+                      "query_string": b"", "headers": [], "server": ("bench", 80),
+                      "client": None,
+                  },
+                  receive=recv,
+                  send=None,
+              )
+
+          def handler_for(value):
+              def handler(id: int):
+                  return {"route": value, "id": id}
+              return handler
+
+          def build(mod, many):
+              app = mod.Night()
+              for i in range(200):
+                  app.get(f"/static/{i}")(lambda i=i: str(i))
+              @app.get("/users/<int:id>")
+              def user(id: int):
+                  return {"id": id}
+              if many:
+                  for i in range(200):
+                      app.get(f"/dynamic/{i}/<int:id>")(handler_for(i))
+              return app
+
+          async def one(mod, app, path, optimized, iterations=10000):
+              req = request(mod, path)
+              matcher = app._match_method_fast if optimized else app._match_method
+              start = time.perf_counter_ns()
+              for _ in range(iterations):
+                  route, params = matcher(path, "GET")
+                  await app._call_route(route, req, params)
+              return (time.perf_counter_ns() - start) / iterations
+
+          async def main():
+              for path, many in (("/static/199", False), ("/users/42", False), ("/dynamic/199/42", True)):
+                  base_app = build(base, many)
+                  opt_app = build(opt, many)
+                  base_samples = [await one(base, base_app, path, False) for _ in range(7)]
+                  opt_samples = [await one(opt, opt_app, path, True) for _ in range(7)]
+                  b = statistics.median(base_samples)
+                  o = statistics.median(opt_samples)
+                  print(path)
+                  print(f"  main   {b:.1f} ns/op")
+                  print(f"  branch {o:.1f} ns/op")
+                  print(f"  speedup {b/o:.3f}x")
+
+          asyncio.run(main())
+          PY
