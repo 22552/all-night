@@ -103,8 +103,6 @@ new = '''    def _on_route_added(self, route: Route):
                 body = body[1:]
             if body.endswith("$"):
                 body = body[:-1]
-            # Combined matcher only selects the route. Parameter extraction is
-            # done once with the selected route's original compiled regex.
             body = re.sub(r"\\(\\?P<[^>]+>", "(?:", body)
             branches.append(f"({body})")
         self._dynamic_method_matchers[method] = (re.compile("^(?:" + "|".join(branches) + ")$"), list(routes))
@@ -292,12 +290,11 @@ new = '''    async def _call_route(self, route: Route, req: Request, params: dic
         return self._coerce_response(result)
 
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, t.Any]) -> Response:
-        # Compatibility wrapper for code that used this internal helper.
         plan = self._endpoint_plans.get(fn)
         if plan is None:
             plan = _compile_endpoint(fn)
             self._endpoint_plans[fn] = plan
-        route = type("_EndpointRoute", (), {"endpoint": fn, "_night_plan": plan})()
+        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan)
         for name in plan.int_params:
             value = params.get(name)
             if value is not None and type(value) is not int:
