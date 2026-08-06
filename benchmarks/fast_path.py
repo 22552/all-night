@@ -106,6 +106,15 @@ class LegacyNight(Night):
             result = await result
         return self._coerce_response(result)
 
+    async def _call_route(self, route, req, params):
+        return await self._call_endpoint(route.endpoint, req, params)
+
+
+def _night_dynamic_handler(value: int):
+    def handler(id: int):
+        return {"route": value, "id": id}
+    return handler
+
 
 def build(app_type):
     app = app_type()
@@ -122,6 +131,9 @@ def build(app_type):
     def user(id: int):
         return {"id": id}
 
+    for index in range(200):
+        app.get(f"/dynamic/{index}/<int:id>")(_night_dynamic_handler(index))
+
     return app
 
 
@@ -130,7 +142,7 @@ async def bench_night_hot_path(app, path: str, iterations: int) -> float:
     started = time.perf_counter_ns()
     for _ in range(iterations):
         route, params = app._match_method(path, "GET")
-        await app._call_endpoint(route.endpoint, req, params)
+        await app._call_route(route, req, params)
     return (time.perf_counter_ns() - started) / iterations
 
 
@@ -139,6 +151,12 @@ def _bench_sync(call, iterations: int) -> float:
     for _ in range(iterations):
         call()
     return (time.perf_counter_ns() - started) / iterations
+
+
+def _flask_dynamic_handler(value: int):
+    def handler(id: int):
+        return {"route": value, "id": id}
+    return handler
 
 
 def build_flask():
@@ -154,7 +172,26 @@ def build_flask():
     def user(id: int):
         return {"id": id}
 
+    for index in range(200):
+        app.add_url_rule(
+            f"/dynamic/{index}/<int:id>",
+            f"dynamic_{index}",
+            _flask_dynamic_handler(index),
+        )
+
     return app, app.test_client()
+
+
+def _robyn_static_handler(value: int):
+    def handler(request):
+        return str(value)
+    return handler
+
+
+def _robyn_dynamic_handler(value: int):
+    def handler(request, id: int):
+        return {"route": value, "id": id}
+    return handler
 
 
 def build_robyn():
@@ -163,16 +200,14 @@ def build_robyn():
 
     app = Robyn(__file__)
     for index in range(200):
-        path = f"/static/{index}"
-
-        def handler(request, index=index):
-            return str(index)
-
-        app.get(path)(handler)
+        app.get(f"/static/{index}")(_robyn_static_handler(index))
 
     @app.get("/users/:id")
     def user(request, id: int):
         return {"id": id}
+
+    for index in range(200):
+        app.get(f"/dynamic/{index}/:id")(_robyn_dynamic_handler(index))
 
     return app, TestClient(app)
 
@@ -187,7 +222,6 @@ def bench_public_clients():
     night = build(Night).test_client()
     flask_app, flask = build_flask()
     robyn_app, robyn = build_robyn()
-    # Keep app objects alive for the lifetime of the clients.
     assert flask_app is not None and robyn_app is not None
 
     clients = {
@@ -196,22 +230,21 @@ def bench_public_clients():
         "Robyn": lambda path: robyn.get(path),
     }
 
-    for path in ("/static/199", "/users/42"):
+    for path in ("/static/199", "/users/42", "/dynamic/199/42"):
         print(f"\n{path}")
         for name, request in clients.items():
-            # Warm route caches and lazy initialization.
             request(path)
             samples = [_bench_sync(lambda request=request, path=path: request(path), iterations) for _ in range(rounds)]
             median = statistics.median(samples)
             print(f"  {name:9s}: {median:10.1f} ns/op")
 
 
-async def main():
+async def main_hot_path():
     iterations = 20_000
     rounds = 7
 
     print("Night internal hot-path benchmark")
-    for path in ("/static/199", "/users/42"):
+    for path in ("/static/199", "/users/42", "/dynamic/199/42"):
         print(f"\n{path}")
         results = {}
         for app_type in (LegacyNight, Night):
@@ -225,8 +258,7 @@ async def main():
         fast = results["Night"]
         print(f"  speedup    : {baseline / fast:.2f}x")
 
-    bench_public_clients()
-
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main_hot_path())
+    bench_public_clients()
