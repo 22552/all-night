@@ -22,12 +22,12 @@ new_on_route = '''    def _on_route_added(self, route: Route):
         self._endpoint_plans[route.endpoint] = plan
         route._night_plan = plan
         route._night_simple_dynamic = None
+        route._night_direct_param = None
 
         if "<" in route.raw_path:
             self._dynamic_route_index.append(route)
 
-            # Common dynamic routes get a regex-free matcher.  Keep the generic
-            # regex router as a fallback for multi-parameter/path converters.
+            # Common one-parameter routes get a regex-free matcher.
             tokens = list(re.finditer(r"<([^>]+)>", key))
             if len(tokens) == 1:
                 token = tokens[0]
@@ -40,6 +40,19 @@ new_on_route = '''    def _on_route_added(self, route: Route):
                     prefix = key[:token.start()]
                     suffix = key[token.end():]
                     route._night_simple_dynamic = (prefix, suffix, name, converter)
+
+                    # For the common def handler(id): case, bypass **kwargs and
+                    # call the function positionally.  This removes a kwargs
+                    # expansion from the hottest dynamic path.
+                    sig = plan.signature
+                    if plan.call_mode == CALL_KWARGS and plan.body_model is None and sig is not None:
+                        ps = tuple(sig.parameters.values())
+                        if (
+                            len(ps) == 1
+                            and ps[0].name == name
+                            and ps[0].kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                        ):
+                            route._night_direct_param = name
 
             for method in route.methods:
                 routes = self._dynamic_method_routes.setdefault(method, [])
@@ -70,8 +83,7 @@ helper = '''
         if suffix:
             if not path.endswith(suffix):
                 return None
-            end = len(path) - len(suffix)
-            value = path[len(prefix):end]
+            value = path[len(prefix):len(path) - len(suffix)]
         else:
             value = path[len(prefix):]
         if not value or "/" in value:
@@ -88,23 +100,20 @@ helper = '''
         if not index:
             return None
 
-        # Probe literal prefixes from longest to shortest.  Runtime cost scales
-        # with path depth, not with the number of registered routes.
+        # Probe literal prefixes from longest to shortest. Runtime cost scales
+        # with path depth rather than number of routes.
         probe = path
-        seen: set[str] = set()
         while True:
             slash = probe.rfind("/")
             if slash <= 0:
                 break
             prefix = probe[:slash + 1]
-            if prefix not in seen:
-                seen.add(prefix)
-                routes = index.get(prefix)
-                if routes:
-                    for route in routes:
-                        params = self._match_simple_dynamic(route, path)
-                        if params is not None:
-                            return route, params
+            routes = index.get(prefix)
+            if routes:
+                for route in routes:
+                    params = self._match_simple_dynamic(route, path)
+                    if params is not None:
+                        return route, params
             probe = probe[:slash]
 
         routes = index.get("/")
@@ -130,17 +139,17 @@ new_match = '''    def _match_method(self, path: str, method: str) -> tuple[Rout
         if key in self._static_methods_by_path:
             raise MethodNotAllowed(self._allowed_methods_for_path(path))
 
-        prefixed = self._match_prefixed_dynamic(key, method)
-        if prefixed is not None:
-            return prefixed
-
-        # Generic fallback for complex/multi-parameter dynamic routes.  Simple
-        # routes were already handled above, so they do not pay regex cost.
         routes = self._dynamic_method_routes.get(method)
-        if routes:
-            complex_routes = [r for r in routes if r._night_simple_dynamic is None]
-            if len(complex_routes) == 1:
-                route = complex_routes[0]
+
+        # One dynamic route is common for tiny services. Avoid prefix probing
+        # and all combined-router machinery in that case.
+        if routes and len(routes) == 1:
+            route = routes[0]
+            if route._night_simple_dynamic is not None:
+                params = self._match_simple_dynamic(route, key)
+                if params is not None:
+                    return route, params
+            else:
                 match = route.pattern.match(path)
                 if match is not None:
                     values = match.groups()
@@ -154,8 +163,16 @@ new_match = '''    def _match_method(self, path: str, method: str) -> tuple[Rout
                             except (TypeError, ValueError):
                                 pass
                     return route, params
-            elif complex_routes:
-                for route in complex_routes:
+        else:
+            prefixed = self._match_prefixed_dynamic(key, method)
+            if prefixed is not None:
+                return prefixed
+
+            # Generic fallback only for complex/multi-parameter routes.
+            if routes:
+                for route in routes:
+                    if route._night_simple_dynamic is not None:
+                        continue
                     match = route.pattern.match(path)
                     if match is None:
                         continue
@@ -180,5 +197,44 @@ pat = re.compile(r'    def _match_method\(self, path: str, method: str\).*?(?=\n
 s, n = pat.subn(new_match.rstrip(), s, count=1)
 if n != 1:
     raise SystemExit(f"match_method replacement count={n}")
+
+new_call = '''    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        plan = route._night_plan
+        fn = route.endpoint
+
+        direct_param = route._night_direct_param
+        if direct_param is not None:
+            result = fn(params[direct_param])
+        else:
+            # params is freshly allocated by routing; do not copy it unless a
+            # caller explicitly reuses it. This removes one dict allocation.
+            kwargs = params
+
+            if plan.body_model is not None:
+                payload = await req.json()
+                validated = _validate_dataclass(plan.body_model, payload)
+                target = next((name for name in plan.body_candidates if name not in kwargs), None)
+                if target is not None:
+                    kwargs[target] = validated
+                else:
+                    kwargs.setdefault("data", validated)
+
+            if plan.call_mode == CALL_REQUEST_KEYWORD:
+                result = fn(req=req, **kwargs)
+            elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+                result = fn(req, **kwargs)
+            elif kwargs:
+                result = fn(**kwargs)
+            else:
+                result = fn()
+
+        if plan.is_coro:
+            result = await t.cast(t.Awaitable, result)
+        return self._coerce_response(result)
+'''
+pat = re.compile(r'    async def _call_route\(self, route: Route, req: Request, params: dict\[str, t.Any\]\) -> Response:\n.*?(?=\n    async def |\n    def )', re.S)
+s, n = pat.subn(new_call.rstrip(), s, count=1)
+if n != 1:
+    raise SystemExit(f"call_route replacement count={n}")
 
 p.write_text(s)
