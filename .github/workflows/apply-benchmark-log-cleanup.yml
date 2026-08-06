@@ -1,0 +1,32 @@
+name: Apply Benchmark Log Cleanup
+
+on:
+  push:
+    branches: ["perf/dynamic-200-hash"]
+    paths:
+      - "tools/suppress_robyn_bench_logs.py"
+      - ".github/workflows/apply-benchmark-log-cleanup.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/dynamic-200-hash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python tools/suppress_robyn_bench_logs.py
+      - run: |
+          python -m pip install Flask robyn bottle WebTest fastapi httpx microdot
+          python benchmarks/fast_path.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/fast_path.py
+          git commit -m "Quiet Robyn benchmark logging"
+          git push origin HEAD:perf/dynamic-200-hash
