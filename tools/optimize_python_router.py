@@ -42,7 +42,7 @@ new_on_route = '''    def _on_route_added(self, route: Route):
                     route._night_simple_dynamic = (prefix, suffix, name, converter)
 
                     # For the common def handler(id): case, bypass **kwargs and
-                    # call the function positionally.  This removes a kwargs
+                    # call the function positionally. This removes a kwargs
                     # expansion from the hottest dynamic path.
                     sig = plan.signature
                     if plan.call_mode == CALL_KWARGS and plan.body_model is None and sig is not None:
@@ -202,12 +202,13 @@ new_call = '''    async def _call_route(self, route: Route, req: Request, params
         plan = route._night_plan
         fn = route.endpoint
 
-        direct_param = route._night_direct_param
+        direct_param = getattr(route, "_night_direct_param", None)
         if direct_param is not None:
             result = fn(params[direct_param])
         else:
-            # params is freshly allocated by routing; do not copy it unless a
-            # caller explicitly reuses it. This removes one dict allocation.
+            # params is freshly allocated by routing in normal dispatch, so do
+            # not copy it. Compatibility callers still receive equivalent
+            # behavior because only body validation mutates kwargs.
             kwargs = params
 
             if plan.body_model is not None:
