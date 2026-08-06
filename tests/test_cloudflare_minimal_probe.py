@@ -4,7 +4,7 @@ import py_compile
 import tomllib
 
 
-ROOT = pathlib.Path(__file__).parent / "deploy" / "cloudflare-minimal"
+ROOT = pathlib.Path(__file__).parent.parent / "deploy" / "cloudflare-minimal"
 
 
 def test_minimal_probe_config():

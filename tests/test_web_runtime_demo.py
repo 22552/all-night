@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def load_demo():
-    path = Path(__file__).parent / "examples" / "web_runtime_demo.py"
+    path = Path(__file__).parent.parent / "examples" / "web_runtime_demo.py"
     spec = importlib.util.spec_from_file_location("web_runtime_demo", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

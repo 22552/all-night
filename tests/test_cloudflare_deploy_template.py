@@ -4,7 +4,7 @@ import py_compile
 import tomllib
 
 
-ROOT = pathlib.Path(__file__).parent / "deploy" / "cloudflare-night"
+ROOT = pathlib.Path(__file__).parent.parent / "deploy" / "cloudflare-night"
 
 
 def test_cloudflare_deploy_template_config():
@@ -23,12 +23,14 @@ def test_cloudflare_deploy_template_config():
     deploy = package["scripts"]["deploy"]
     assert "raw.githubusercontent.com/22552/all-night" in build
     assert "-o src/night.py" in build
+    assert "cp night_fast.py src/night_fast.py" in build
     assert "cp portable_runtime.py src/portable_runtime.py" in build
     assert "cp web_runtime.py src/web_runtime.py" in build
     assert deploy == "npx wrangler deploy"
 
 
 def test_cloudflare_deploy_template_python_compiles():
+    py_compile.compile(str(ROOT / "night_fast.py"), doraise=True)
     py_compile.compile(str(ROOT / "portable_runtime.py"), doraise=True)
     py_compile.compile(str(ROOT / "web_runtime.py"), doraise=True)
     py_compile.compile(str(ROOT / "src" / "entry.py"), doraise=True)
@@ -36,6 +38,8 @@ def test_cloudflare_deploy_template_python_compiles():
 
 def test_cloudflare_todo_routes_are_present():
     entry = (ROOT / "src" / "entry.py").read_text()
+    assert "from night_fast import FastNight" in entry
+    assert "app = FastNight()" in entry
     assert '@app.get("/")' in entry
     assert '@app.get("/api/todos")' in entry
     assert '@app.post("/api/todos")' in entry
@@ -44,7 +48,7 @@ def test_cloudflare_todo_routes_are_present():
     assert "self.env.TODOS" in entry
     assert "await _kv.put" in entry
     assert "await _kv.delete" in entry
-    assert "Night ToDo" in entry
+    assert "FastNight + Cloudflare Python Workers + KV" in entry
 
 
 def test_cloudflare_deploy_button_points_to_template():

@@ -1,12 +1,13 @@
 import json
 import uuid
 
-from night import HTMLResponse, Night
+from night import HTMLResponse
+from night_fast import FastNight
 from web_runtime import CloudflareWorkerMixin
 from workers import Response, WorkerEntrypoint
 
 
-app = Night()
+app = FastNight()
 _kv = None
 
 PAGE = """<!doctype html>
@@ -21,7 +22,7 @@ h1{margin-bottom:4px}.sub{color:#999;margin-top:0}form{display:flex;gap:8px;marg
 </style>
 </head>
 <body>
-<h1>Night ToDo</h1><p class="sub">Night + Cloudflare Python Workers + KV</p>
+<h1>Night ToDo</h1><p class="sub">FastNight + Cloudflare Python Workers + KV</p>
 <form id="form"><input id="title" placeholder="What needs doing?" autocomplete="off"><button class="add">Add</button></form>
 <ul id="list"></ul>
 <script>
@@ -73,12 +74,7 @@ async def create_todo(req):
         return {"error": "title is required"}
 
     todo_id = uuid.uuid4().hex
-    todo = {
-        "id": todo_id,
-        "title": title[:200],
-        "done": False,
-        "created": todo_id,
-    }
+    todo = {"id": todo_id, "title": title[:200], "done": False, "created": todo_id}
     await _kv.put(_todo_key(todo_id), json.dumps(todo, separators=(",", ":")))
     return todo
 
@@ -88,7 +84,6 @@ async def update_todo(req, id: str):
     todo = await _get_todo(id)
     if todo is None:
         return {"error": "todo not found"}
-
     data = await req.json()
     if isinstance(data, dict) and "title" in data:
         title = str(data["title"]).strip()
@@ -96,7 +91,6 @@ async def update_todo(req, id: str):
             todo["title"] = title[:200]
     if isinstance(data, dict) and "done" in data:
         todo["done"] = bool(data["done"])
-
     await _kv.put(_todo_key(id), json.dumps(todo, separators=(",", ":")))
     return todo
 
