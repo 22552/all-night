@@ -2,8 +2,7 @@ import asyncio
 
 import pytest
 
-from night import MethodNotAllowed, Request
-from night_fast import FastNight
+from night import MethodNotAllowed, Night, Request
 
 
 async def _empty_receive():
@@ -30,7 +29,7 @@ def _request(path="/", method="GET"):
 
 
 def test_static_routes_use_method_path_index():
-    app = FastNight()
+    app = Night()
 
     @app.get("/hello")
     def hello():
@@ -39,11 +38,11 @@ def test_static_routes_use_method_path_index():
     route, params = app._match_method("/hello", "GET")
     assert route.endpoint is hello
     assert params == {}
-    assert app._fast_static["GET"]["/hello"] is route
+    assert app._static_method_index["GET"]["/hello"] is route
 
 
 def test_static_method_not_allowed_preserves_allow():
-    app = FastNight()
+    app = Night()
 
     @app.get("/hello")
     def hello():
@@ -55,7 +54,7 @@ def test_static_method_not_allowed_preserves_allow():
 
 
 def test_dynamic_routes_fall_back_and_convert_int_params():
-    app = FastNight()
+    app = Night()
 
     @app.get("/users/<int:id>")
     def user(id: int):
@@ -68,7 +67,7 @@ def test_dynamic_routes_fall_back_and_convert_int_params():
 
 
 def test_request_injection_plan_is_compiled_at_registration():
-    app = FastNight()
+    app = Night()
 
     @app.get("/method")
     def method(req: Request):
@@ -89,7 +88,7 @@ def test_mount_rebuilds_fast_index():
     def ping():
         return "pong"
 
-    app = FastNight()
+    app = Night()
     app.mount("/api", child)
 
     route, params = app._match_method("/api/ping", "GET")

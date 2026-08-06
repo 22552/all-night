@@ -1,13 +1,12 @@
 import json
 import uuid
 
-from night import HTMLResponse
-from night_fast import FastNight
+from night import HTMLResponse, Night
 from web_runtime import CloudflareWorkerMixin
 from workers import Response, WorkerEntrypoint
 
 
-app = FastNight()
+app = Night()
 _kv = None
 
 PAGE = """<!doctype html>
@@ -22,7 +21,7 @@ h1{margin-bottom:4px}.sub{color:#999;margin-top:0}form{display:flex;gap:8px;marg
 </style>
 </head>
 <body>
-<h1>Night ToDo</h1><p class="sub">FastNight + Cloudflare Python Workers + KV</p>
+<h1>Night ToDo</h1><p class="sub">Night + Cloudflare Python Workers + KV</p>
 <form id="form"><input id="title" placeholder="What needs doing?" autocomplete="off"><button class="add">Add</button></form>
 <ul id="list"></ul>
 <script>
