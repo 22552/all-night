@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Small routing/endpoint-dispatch microbenchmark for Night and FastNight.
+"""Routing/dispatch microbenchmarks for Night plus Flask and Robyn comparisons.
 
 Run with:
     python benchmarks/fast_path.py
 
-This intentionally benchmarks framework hot paths without network or ASGI server
-noise. It is for relative local measurements, not production throughput claims.
+Two suites are reported:
+1. Night hot-path dispatch: router match + endpoint call, without network/server I/O.
+2. Public in-process framework clients for Night, Flask, and Robyn.
+
+The second suite is useful for rough framework comparisons, but it is not a
+production throughput benchmark. Each framework's test client has different
+amounts of bookkeeping.
 """
 
 from __future__ import annotations
@@ -44,7 +49,6 @@ def make_request(path: str) -> Request:
         receive=_empty_receive,
         send=None,
     )
-
 
 
 class LegacyNight(Night):
@@ -102,6 +106,7 @@ class LegacyNight(Night):
             result = await result
         return self._coerce_response(result)
 
+
 def build(app_type):
     app = app_type()
 
@@ -120,7 +125,7 @@ def build(app_type):
     return app
 
 
-async def bench(app, path: str, iterations: int) -> float:
+async def bench_night_hot_path(app, path: str, iterations: int) -> float:
     req = make_request(path)
     started = time.perf_counter_ns()
     for _ in range(iterations):
@@ -129,23 +134,98 @@ async def bench(app, path: str, iterations: int) -> float:
     return (time.perf_counter_ns() - started) / iterations
 
 
+def _bench_sync(call, iterations: int) -> float:
+    started = time.perf_counter_ns()
+    for _ in range(iterations):
+        call()
+    return (time.perf_counter_ns() - started) / iterations
+
+
+def build_flask():
+    from flask import Flask
+
+    app = Flask("night-bench")
+    for index in range(200):
+        endpoint = f"static_{index}"
+        path = f"/static/{index}"
+        app.add_url_rule(path, endpoint, lambda index=index: str(index))
+
+    @app.get("/users/<int:id>")
+    def user(id: int):
+        return {"id": id}
+
+    return app, app.test_client()
+
+
+def build_robyn():
+    from robyn import Robyn
+    from robyn.testing import TestClient
+
+    app = Robyn(__file__)
+    for index in range(200):
+        path = f"/static/{index}"
+
+        def handler(request, index=index):
+            return str(index)
+
+        app.get(path)(handler)
+
+    @app.get("/users/:id")
+    def user(request, id: int):
+        return {"id": id}
+
+    return app, TestClient(app)
+
+
+def bench_public_clients():
+    print("\nIn-process public client benchmark")
+    print("  (different test clients do different bookkeeping; treat as rough comparison)")
+
+    iterations = 2_000
+    rounds = 5
+
+    night = build(Night).test_client()
+    flask_app, flask = build_flask()
+    robyn_app, robyn = build_robyn()
+    # Keep app objects alive for the lifetime of the clients.
+    assert flask_app is not None and robyn_app is not None
+
+    clients = {
+        "Night": lambda path: night.get(path),
+        "Flask": lambda path: flask.get(path),
+        "Robyn": lambda path: robyn.get(path),
+    }
+
+    for path in ("/static/199", "/users/42"):
+        print(f"\n{path}")
+        for name, request in clients.items():
+            # Warm route caches and lazy initialization.
+            request(path)
+            samples = [_bench_sync(lambda request=request, path=path: request(path), iterations) for _ in range(rounds)]
+            median = statistics.median(samples)
+            print(f"  {name:9s}: {median:10.1f} ns/op")
+
+
 async def main():
     iterations = 20_000
     rounds = 7
 
+    print("Night internal hot-path benchmark")
     for path in ("/static/199", "/users/42"):
         print(f"\n{path}")
         results = {}
         for app_type in (LegacyNight, Night):
             app = build(app_type)
-            samples = [await bench(app, path, iterations) for _ in range(rounds)]
+            samples = [await bench_night_hot_path(app, path, iterations) for _ in range(rounds)]
             median = statistics.median(samples)
             results[app_type.__name__] = median
-            print(f"  {app_type.__name__:9s}: {median:9.1f} ns/op")
+            print(f"  {app_type.__name__:11s}: {median:9.1f} ns/op")
 
         baseline = results["LegacyNight"]
         fast = results["Night"]
-        print(f"  speedup  : {baseline / fast:.2f}x")
+        print(f"  speedup    : {baseline / fast:.2f}x")
+
+    bench_public_clients()
 
 
 if __name__ == "__main__":
