@@ -1439,6 +1439,7 @@ class Night(Router):
         self._dynamic_method_routes: dict[str, list[Route]] = {}
         self._dynamic_method_matchers: dict[str, tuple[re.Pattern, list[Route]]] = {}
         self._dynamic_prefix_index: dict[str, dict[str, list[Route]]] = {}
+        self._dynamic_terminal_index: dict[str, dict[str, Route]] = {}
         self._static_method_index: dict[str, dict[str, Route]] = {}
         self._static_methods_by_path: dict[str, set[str]] = {}
         self._endpoint_plans: dict[t.Callable, _EndpointPlan] = {}
@@ -1521,8 +1522,11 @@ class Night(Router):
                 routes = self._dynamic_method_routes.setdefault(method, [])
                 routes.append(route)
                 if route._night_simple_dynamic is not None:
-                    prefix = route._night_simple_dynamic[0]
+                    prefix, suffix, _name, _converter = route._night_simple_dynamic
                     self._dynamic_prefix_index.setdefault(method, {}).setdefault(prefix, []).append(route)
+                    if not suffix and prefix.endswith("/"):
+                        base = prefix[:-1] or "/"
+                        self._dynamic_terminal_index.setdefault(method, {})[base] = route
                 self._rebuild_dynamic_matcher(method)
             self._classify_route_call(route, plan)
             return
@@ -1949,6 +1953,7 @@ class Night(Router):
         self._dynamic_method_routes.clear()
         self._dynamic_method_matchers.clear()
         self._dynamic_prefix_index.clear()
+        self._dynamic_terminal_index.clear()
         self._static_method_index.clear()
         self._static_methods_by_path.clear()
         self._endpoint_plans.clear()
@@ -2013,6 +2018,21 @@ class Night(Router):
                                 pass
                     return route, params
         else:
+            terminal = self._dynamic_terminal_index.get(method)
+            if terminal:
+                base, sep, value = key.rpartition("/")
+                if sep and value:
+                    route = terminal.get(base or "/")
+                    if route is not None:
+                        _prefix, _suffix, name, converter = route._night_simple_dynamic
+                        if converter == "int":
+                            try:
+                                value = int(value)
+                            except ValueError:
+                                route = None
+                        if route is not None:
+                            return route, {name: value}
+
             prefixed = self._match_prefixed_dynamic(key, method)
             if prefixed is not None:
                 return prefixed
