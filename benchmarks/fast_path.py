@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Routing/dispatch microbenchmarks for Night plus Flask and Robyn comparisons.
+"""Routing/dispatch microbenchmarks for Night plus framework comparisons.
 
 Run with:
     python benchmarks/fast_path.py
 
 Two suites are reported:
 1. Night hot-path dispatch: router match + endpoint call, without network/server I/O.
-2. Public in-process framework clients for Night, Flask, and Robyn.
+2. Public in-process framework clients for Night, Flask, Robyn, Bottle,
+   FastAPI, and Microdot.
 
 The second suite is useful for rough framework comparisons, but it is not a
 production throughput benchmark. Each framework's test client has different
-amounts of bookkeeping.
+amounts of bookkeeping. Microdot's official test client is async, so the sync
+adapter below keeps one event loop alive instead of creating a new loop for
+each request.
 """
 
 import asyncio
@@ -215,23 +218,130 @@ def build_robyn(*, many_dynamic: bool):
     return app, TestClient(app)
 
 
+def _bottle_dynamic_handler(value: int):
+    def handler(id: int):
+        return {"route": value, "id": id}
+    return handler
+
+
+def build_bottle(*, many_dynamic: bool):
+    from bottle import Bottle
+    from webtest import TestApp
+
+    app = Bottle()
+    for index in range(200):
+        app.route(f"/static/{index}", method="GET", callback=lambda index=index: str(index))
+
+    def user(id: int):
+        return {"id": id}
+    app.route("/users/<id:int>", method="GET", callback=user)
+
+    if many_dynamic:
+        for index in range(200):
+            app.route(
+                f"/dynamic/{index}/<id:int>",
+                method="GET",
+                callback=_bottle_dynamic_handler(index),
+            )
+
+    return app, TestApp(app)
+
+
+def _fastapi_dynamic_handler(value: int):
+    def handler(id: int):
+        return {"route": value, "id": id}
+    return handler
+
+
+def build_fastapi(*, many_dynamic: bool):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    for index in range(200):
+        def static_handler(index=index):
+            return str(index)
+        app.add_api_route(f"/static/{index}", static_handler, methods=["GET"])
+
+    def user(id: int):
+        return {"id": id}
+    app.add_api_route("/users/{id}", user, methods=["GET"])
+
+    if many_dynamic:
+        for index in range(200):
+            app.add_api_route(
+                f"/dynamic/{index}/{{id}}",
+                _fastapi_dynamic_handler(index),
+                methods=["GET"],
+            )
+
+    return app, TestClient(app)
+
+
+def _microdot_static_handler(value: int):
+    async def handler(request):
+        return str(value)
+    return handler
+
+
+def _microdot_dynamic_handler(value: int):
+    async def handler(request, id: int):
+        return {"route": value, "id": id}
+    return handler
+
+
+class _MicrodotSyncClient:
+    def __init__(self, client):
+        self.client = client
+        self.loop = asyncio.new_event_loop()
+
+    def get(self, path: str):
+        return self.loop.run_until_complete(self.client.get(path))
+
+
+def build_microdot(*, many_dynamic: bool):
+    from microdot import Microdot
+    from microdot.test_client import TestClient
+
+    app = Microdot()
+    for index in range(200):
+        app.get(f"/static/{index}")(_microdot_static_handler(index))
+
+    async def user(request, id: int):
+        return {"id": id}
+    app.get("/users/<int:id>")(user)
+
+    if many_dynamic:
+        for index in range(200):
+            app.get(f"/dynamic/{index}/<int:id>")(_microdot_dynamic_handler(index))
+
+    return app, _MicrodotSyncClient(TestClient(app))
+
+
 def public_clients(*, many_dynamic: bool):
     night = build_night(Night, many_dynamic=many_dynamic).test_client()
     flask_app, flask = build_flask(many_dynamic=many_dynamic)
     robyn_app, robyn = build_robyn(many_dynamic=many_dynamic)
-    assert flask_app is not None and robyn_app is not None
+    bottle_app, bottle = build_bottle(many_dynamic=many_dynamic)
+    fastapi_app, fastapi = build_fastapi(many_dynamic=many_dynamic)
+    microdot_app, microdot = build_microdot(many_dynamic=many_dynamic)
+    assert all(app is not None for app in (flask_app, robyn_app, bottle_app, fastapi_app, microdot_app))
     return {
         "Night": lambda path: night.get(path),
         "Flask": lambda path: flask.get(path),
         "Robyn": lambda path: robyn.get(path),
+        "Bottle": lambda path: bottle.get(path),
+        "FastAPI": lambda path: fastapi.get(path),
+        "Microdot": lambda path: microdot.get(path),
     }
 
 
 def bench_public_clients():
     print("\nIn-process public client benchmark")
-    print("  (different test clients do different bookkeeping; treat as rough comparison)")
+    print("  (test clients do different bookkeeping; treat as rough comparison)")
+    print("  (Microdot uses its official async client through one persistent event loop)")
 
-    iterations = 500
+    iterations = 300
     rounds = 3
 
     cases = (
@@ -240,9 +350,11 @@ def bench_public_clients():
         ("/dynamic/199/42", True),
     )
     cached = {}
+    medians_by_case = {}
     for path, many_dynamic in cases:
         clients = cached.setdefault(many_dynamic, public_clients(many_dynamic=many_dynamic))
         print(f"\n{path}")
+        medians = {}
         for name, request in clients.items():
             request(path)
             samples = [
@@ -250,7 +362,17 @@ def bench_public_clients():
                 for _ in range(rounds)
             ]
             median = statistics.median(samples)
+            medians[name] = median
             print(f"  {name:9s}: {median:10.1f} ns/op")
+        medians_by_case[path] = medians
+
+    base = medians_by_case["/users/42"]
+    many = medians_by_case["/dynamic/199/42"]
+    print("\nDynamic x200 scaling (/dynamic/199/42 vs /users/42)")
+    for name in many:
+        ratio = many[name] / base[name]
+        delta = (ratio - 1.0) * 100.0
+        print(f"  {name:9s}: {ratio:6.3f}x ({delta:+6.1f}%)")
 
 
 async def main_hot_path():
