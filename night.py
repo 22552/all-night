@@ -1321,6 +1321,63 @@ class Blueprint(Router):
         return self
 
 
+CALL_KWARGS = 0
+CALL_REQUEST_POSITIONAL = 1
+CALL_REQUEST_KEYWORD = 2
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _EndpointPlan:
+    signature: inspect.Signature | None
+    type_hints: dict[str, t.Any]
+    call_mode: int
+    int_params: tuple[str, ...]
+    body_model: type | None
+    body_candidates: tuple[str, ...]
+
+
+def _compile_endpoint(fn: t.Callable) -> _EndpointPlan:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        signature = None
+
+    try:
+        type_hints = t.get_type_hints(fn)
+    except Exception:
+        type_hints = {}
+
+    call_mode = CALL_KWARGS
+    int_params: list[str] = []
+    body_candidates: list[str] = []
+
+    if signature is not None:
+        params = tuple(signature.parameters.values())
+        if "req" in signature.parameters:
+            call_mode = CALL_REQUEST_KEYWORD
+        elif params:
+            first = params[0]
+            first_type = type_hints.get(first.name, first.annotation)
+            if first_type is Request or first.name in {"request", "req"}:
+                call_mode = CALL_REQUEST_POSITIONAL
+
+        for param in params:
+            annotation = type_hints.get(param.name, param.annotation)
+            if annotation is int:
+                int_params.append(param.name)
+            if param.name not in {"req", "request"}:
+                body_candidates.append(param.name)
+
+    return _EndpointPlan(
+        signature=signature,
+        type_hints=type_hints,
+        call_mode=call_mode,
+        int_params=tuple(int_params),
+        body_model=getattr(fn, "__night_body_model__", None),
+        body_candidates=tuple(body_candidates),
+    )
+
+
 class Night(Router):
     def __init__(self, *, debug: bool = False, max_body_size: int = MAX_BODY_SIZE, secret_key: str | bytes | None = None, session_secure: bool | None = None, css: bool = False, css_minify: bool = False):
         super().__init__()
@@ -1333,6 +1390,9 @@ class Night(Router):
         self._css_cache: str | None = None
         self._static_route_index: dict[str, list[Route]] = {}
         self._dynamic_route_index: list[Route] = []
+        self._static_method_index: dict[str, dict[str, Route]] = {}
+        self._static_methods_by_path: dict[str, set[str]] = {}
+        self._endpoint_plans: dict[t.Callable, _EndpointPlan] = {}
         if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
@@ -1351,10 +1411,16 @@ class Night(Router):
 
     def _on_route_added(self, route: Route):
         key = route.raw_path.rstrip("/") or "/"
+        self._endpoint_plans[route.endpoint] = _compile_endpoint(route.endpoint)
         if "<" in route.raw_path:
             self._dynamic_route_index.append(route)
-        else:
-            self._static_route_index.setdefault(key, []).append(route)
+            return
+
+        self._static_route_index.setdefault(key, []).append(route)
+        methods = self._static_methods_by_path.setdefault(key, set())
+        for method in route.methods:
+            methods.add(method)
+            self._static_method_index.setdefault(method, {})[key] = route
 
     def enable_css(self, *, minify: bool = False):
         self.css_minify = minify
@@ -1576,6 +1642,9 @@ class Night(Router):
             )
         self._static_route_index.clear()
         self._dynamic_route_index.clear()
+        self._static_method_index.clear()
+        self._static_methods_by_path.clear()
+        self._endpoint_plans.clear()
         for route in self.routes: self._on_route_added(route)
         return router
 
@@ -1602,11 +1671,18 @@ class Night(Router):
 
     def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, str]]:
         key = path.rstrip("/") or "/"
-        candidates = self._static_route_index.get(key)
-        if candidates is None:
-            candidates = self._dynamic_route_index
+
+        # Hono-style hot path: exact static routes are two hash lookups and
+        # avoid regex matching entirely. Dynamic routes use the proven matcher.
+        route = self._static_method_index.get(method, {}).get(key)
+        if route is not None:
+            return route, {}
+
+        if key in self._static_methods_by_path:
+            raise MethodNotAllowed(self._allowed_methods_for_path(path))
+
         path_matched = False
-        for route in candidates:
+        for route in self._dynamic_route_index:
             match = route.pattern.match(path)
             if not match:
                 continue
@@ -1631,62 +1707,39 @@ class Night(Router):
         return PlainTextResponse(str(value))
 
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, str]) -> Response:
-        # Convert params types based on annotations where possible
-        try:
-            sig = getattr(fn, "__night_signature__", None)
-            if sig is None:
-                sig = inspect.signature(fn)
-        except Exception:
-            sig = None
-        try:
-            type_hints = t.get_type_hints(fn)
-        except Exception:
-            type_hints = {}
+        plan = self._endpoint_plans.get(fn)
+        if plan is None:
+            plan = _compile_endpoint(fn)
+            self._endpoint_plans[fn] = plan
 
         kwargs: dict[str, t.Any] = dict(params)
-        body_model = getattr(fn, "__night_body_model__", None)
-        if body_model is not None:
+
+        if plan.body_model is not None:
             payload = await req.json()
-            validated = _validate_dataclass(body_model, payload)
-            target = None
-            if sig is not None:
-                target = next((p for p in sig.parameters.values()
-                               if p.name not in {"req", "request"} and p.name not in kwargs), None)
+            validated = _validate_dataclass(plan.body_model, payload)
+            target = next((name for name in plan.body_candidates if name not in kwargs), None)
             if target is not None:
-                kwargs[target.name] = validated
+                kwargs[target] = validated
             else:
                 kwargs.setdefault("data", validated)
-        if sig is not None:
-            for name, p in sig.parameters.items():
-                if name in kwargs and type_hints.get(name, p.annotation) is int:
-                    try:
-                        kwargs[name] = int(kwargs[name])
-                    except Exception:
-                        pass
 
-        # Common patterns: fn(req, **params) or fn(**params) or fn(req)
-        try:
-            if sig is not None and "req" in sig.parameters:
-                res = fn(req=req, **kwargs)
-            else:
-                if sig is not None and len(sig.parameters) >= 1:
-                    first = next(iter(sig.parameters.values()))
-                    if type_hints.get(first.name, first.annotation) is Request or first.name in ("request", "req"):
-                        res = fn(req, **kwargs)
-                    else:
-                        res = fn(**kwargs)
-                else:
-                    res = fn(**kwargs)
+        for name in plan.int_params:
+            if name in kwargs and not isinstance(kwargs[name], int):
+                try:
+                    kwargs[name] = int(kwargs[name])
+                except (TypeError, ValueError):
+                    pass
 
-            if inspect.isawaitable(res):
-                res = await t.cast(t.Awaitable, res)
-            return self._coerce_response(res)
-        except HTTPError:
-            raise
-        except Exception:
-            # Let __call__ select a registered @errorhandler before rendering
-            # the framework's fallback 500 response.
-            raise
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+            result = fn(req=req, **kwargs)
+        elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+            result = fn(req, **kwargs)
+        else:
+            result = fn(**kwargs)
+
+        if inspect.isawaitable(result):
+            result = await t.cast(t.Awaitable, result)
+        return self._coerce_response(result)
 
     async def _run_before_hooks(self, req: Request) -> Response | None:
         for fn in self.before_hooks:
@@ -1728,10 +1781,15 @@ class Night(Router):
         return resp
 
     def _allowed_methods_for_path(self, path: str) -> set[str]:
-        methods: set[str] = set()
-        for r in self.routes:
-            if r.pattern.match(path):
-                methods |= set(r.methods)
+        key = path.rstrip("/") or "/"
+        static_methods = self._static_methods_by_path.get(key)
+        if static_methods is not None:
+            methods = set(static_methods)
+        else:
+            methods: set[str] = set()
+            for route in self._dynamic_route_index:
+                if route.pattern.match(path):
+                    methods |= set(route.methods)
         if "GET" in methods:
             methods.add("HEAD")
         return methods

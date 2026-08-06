@@ -1,13 +1,12 @@
 import json
 import uuid
 
-from night import HTMLResponse
-from night_fast import FastNight
+from night import HTMLResponse, Night
 from web_runtime import CloudflareWorkerMixin
 from workers import Response, WorkerEntrypoint
 
 
-app = FastNight()
+app = Night()
 _kv = None
 
 PAGE = """<!doctype html>
