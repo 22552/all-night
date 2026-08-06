@@ -16,7 +16,9 @@ The demo includes a browser UI and a JSON API:
 - `PATCH /api/todos/<id>` — rename or toggle a todo
 - `DELETE /api/todos/<id>` — delete a todo
 
-Todos are intentionally stored in Worker memory for this runtime demo. They can disappear when the isolate is restarted; use D1, KV, Durable Objects, or another persistent store for a real application.
+Todos are persisted in **Cloudflare Workers KV** through the `TODOS` binding. Each item is stored under a `todo:<uuid>` key, so the demo does not rely on isolate memory and does not need a shared numeric counter.
+
+Wrangler automatic resource provisioning is used: the template declares the `TODOS` KV binding without an account-specific namespace ID. On deployment, Wrangler/Workers Builds can create and bind the KV namespace automatically.
 
 ## Build and deploy
 
@@ -44,8 +46,11 @@ npm run build
 npx wrangler dev
 ```
 
+Wrangler creates a local KV resource automatically for local development.
+
 ## Notes
 
 - The template uses the `python_workers` compatibility flag.
 - Night, the portable runtime adapter, and the Web runtime adapter are vendored into `src/` during the build.
+- Workers KV is eventually consistent; this demo favors a simple edge-native persistence example over transactional semantics.
 - Streaming/SSE and WebSockets are not part of this first portable Web adapter demo.
