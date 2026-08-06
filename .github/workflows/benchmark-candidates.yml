@@ -1,0 +1,83 @@
+name: Benchmark Hotspot Candidates
+on:
+  push:
+    branches: ["perf/hotpath-round2"]
+    paths: [".github/workflows/benchmark-candidates.yml"]
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Benchmark candidates
+        run: |
+          python - <<'PY'
+          import datetime as dt, email.utils, statistics, time
+
+          def med(fn, n=200000, rounds=9):
+              out=[]
+              for _ in range(rounds):
+                  t0=time.perf_counter_ns()
+                  for _ in range(n): fn()
+                  out.append((time.perf_counter_ns()-t0)/n)
+              return statistics.median(out)
+
+          def raw_date():
+              return email.utils.format_datetime(dt.datetime.now(tz=dt.timezone.utc), usegmt=True)
+          cache_sec=-1; cache_val=''
+          def cached_date():
+              global cache_sec, cache_val
+              now=int(time.time())
+              if now != cache_sec:
+                  cache_sec=now
+                  cache_val=email.utils.format_datetime(dt.datetime.fromtimestamp(now, tz=dt.timezone.utc), usegmt=True)
+              return cache_val
+          print('date raw', med(raw_date, 30000))
+          print('date cached', med(cached_date, 30000))
+
+          paths=['/api/users/123','/api/users/123/','/']
+          for p in paths:
+              a=med(lambda p=p: p.rstrip('/') or '/')
+              b=med(lambda p=p: p if p[-1:] != '/' or p == '/' else p[:-1])
+              c=med(lambda p=p: p[:-1] if len(p)>1 and p.endswith('/') else p)
+              print('path',repr(p),'rstrip',a,'slice',b,'endswith',c)
+
+          nested={'GET':{'/api/users/123':object()}}
+          flat={('GET','/api/users/123'):object()}
+          method='GET'; key='/api/users/123'
+          print('index nested',med(lambda: nested.get(method,{}).get(key)))
+          print('index nested direct',med(lambda: nested.get(method).get(key)))
+          print('index tuple',med(lambda: flat.get((method,key))))
+
+          hs=[(f'x-test-{i}'.encode(), str(i).encode()) for i in range(20)]
+          hs.insert(4,(b'content-type',b'application/json'))
+          hs.append((b'cookie',b'a=b'))
+          def full():
+              d={}
+              for k,v in hs: d[k.decode('latin-1').lower()]=v.decode('latin-1')
+              return d.get('content-type')
+          def scan():
+              target=b'content-type'
+              for k,v in hs:
+                  if k.lower()==target: return v.decode('latin-1')
+          print('header full20',med(full,50000))
+          print('header scan20',med(scan,50000))
+
+          vals={'dict':{},'str':'ok','bytes':b'ok'}
+          def current(v):
+              kind=type(v)
+              if kind is dict or kind is list: return 1
+              if kind is str: return 2
+              if kind is bytes: return 3
+              return 4
+          def strfirst(v):
+              kind=type(v)
+              if kind is str: return 2
+              if kind is dict or kind is list: return 1
+              if kind is bytes: return 3
+              return 4
+          for name,v in vals.items():
+              print('coerce',name,'current',med(lambda v=v: current(v)),'strfirst',med(lambda v=v: strfirst(v)))
+          PY
