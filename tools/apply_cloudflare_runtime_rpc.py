@@ -16,7 +16,7 @@ methods = r'''    async def cloudflare_rpc(
         """Invoke a registered ``@app.rpc`` method over Workers RPC.
 
         The Cloudflare runtime SDK owns the Python <-> JavaScript/RPC value
-        conversion.  Keeping this bridge lazy preserves Night's zero-dependency
+        conversion. Keeping this bridge lazy preserves Night's zero-dependency
         behavior outside Cloudflare Workers.
         """
         try:
@@ -45,7 +45,7 @@ methods = r'''    async def cloudflare_rpc(
     async def cloudflare_fetch(self, request: t.Any, *, response_class: t.Any = None) -> t.Any:
         """Serve a Cloudflare Workers Request through Night's ASGI core.
 
-        This embeds the old portable/web adapter path into Night itself.  It
+        This embeds the old portable/web adapter path into Night itself. It
         accepts the official ``workers.Request`` wrapper and also keeps a
         fallback for raw JS Request objects used by older compatibility dates.
         """
@@ -165,14 +165,6 @@ new_build = '"build": "if [ -f ../../night.py ]; then cp ../../night.py src/nigh
 if old_build not in ps:
     raise SystemExit('package build anchor not found')
 package.write_text(ps.replace(old_build, new_build, 1))
-
-workflow = Path('.github/workflows/test.yml')
-ws = workflow.read_text()
-old_compile = 'python -m py_compile src/night.py src/portable_runtime.py src/web_runtime.py src/entry.py'
-new_compile = 'python -m py_compile src/night.py src/entry.py'
-if old_compile not in ws:
-    raise SystemExit('test workflow compile anchor not found')
-workflow.write_text(ws.replace(old_compile, new_compile, 1))
 
 readme = Path('deploy/cloudflare-night/README.md')
 rs = readme.read_text()
