@@ -499,7 +499,7 @@ def csrf_middleware() -> Middleware:
 # ----------------------------
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Request:
     scope: dict
     receive: t.Callable
@@ -2173,9 +2173,11 @@ class Night(Router):
         if scope.get("type") != "http":
             return
 
-        request_scope = dict(scope)
         if self.secret_key:
+            request_scope = dict(scope)
             request_scope["session_secret"] = self.secret_key
+        else:
+            request_scope = scope
         req = Request(scope=request_scope, receive=receive, send=send, max_body_size=self.max_body_size)
         token = _current_request.set(req)
         try:
@@ -2212,7 +2214,10 @@ class Night(Router):
                 req.scope["method"] = "GET"
 
             try:
-                resp = await call_next(0)
+                if self.middlewares:
+                    resp = await call_next(0)
+                else:
+                    resp = await self._dispatch(req)
             except HTTPError as he:
                 handler = self._find_error_handler(he)
                 if handler is not None:
