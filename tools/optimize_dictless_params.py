@@ -10,7 +10,9 @@ if "_NO_PATH_PARAM = object()" not in s:
         raise SystemExit("constants anchor not found")
     s = s.replace(needle, needle + "_NO_PATH_PARAM = object()\n", 1)
 
-new_simple = '''    @staticmethod
+# Keep the public/internal compatibility matcher returning dicts, and add a
+# scalar matcher used only by production dispatch.
+insert_simple = '''    @staticmethod
     def _match_simple_dynamic_value(route: Route, path: str):
         prefix, suffix, _name, converter = route._night_simple_dynamic
         if not path.startswith(prefix):
@@ -30,26 +32,21 @@ new_simple = '''    @staticmethod
                 return _NO_PATH_PARAM
         return value
 
-    @staticmethod
-    def _match_simple_dynamic(route: Route, path: str):
-        value = Night._match_simple_dynamic_value(route, path)
-        if value is _NO_PATH_PARAM:
-            return None
-        return {route._night_simple_dynamic[2]: value}
 '''
-pat = re.compile(r'    @staticmethod\n    def _match_simple_dynamic\(route: Route, path: str\):\n.*?(?=\n    def _match_prefixed_dynamic)', re.S)
-s, n = pat.subn(new_simple.rstrip(), s, count=1)
-if n != 1:
-    raise SystemExit(f"simple matcher replacement count={n}")
+marker = "    @staticmethod\n    def _match_simple_dynamic(route: Route, path: str):\n"
+if "def _match_simple_dynamic_value" not in s:
+    if marker not in s:
+        raise SystemExit("simple matcher marker not found")
+    s = s.replace(marker, insert_simple + marker, 1)
 
-new_prefixed = '''    def _match_prefixed_dynamic(self, path: str, method: str):
+insert_fast = '''    def _match_prefixed_dynamic_fast(self, path: str, method: str):
         index = self._dynamic_prefix_index.get(method)
         if not index:
             return None
 
-        # Probe literal prefixes from longest to shortest. Direct one-parameter
-        # handlers carry the raw converted value forward, avoiding a path-param
-        # dict allocation on the hottest dynamic route path.
+        # Only return from this fast matcher when the endpoint can consume the
+        # converted scalar directly. Other route shapes fall back to the
+        # compatibility matcher, which still returns a params dict.
         probe = path
         while True:
             slash = probe.rfind("/")
@@ -59,117 +56,79 @@ new_prefixed = '''    def _match_prefixed_dynamic(self, path: str, method: str):
             routes = index.get(prefix)
             if routes:
                 for route in routes:
-                    value = self._match_simple_dynamic_value(route, path)
-                    if value is _NO_PATH_PARAM:
+                    if route._night_direct_param is None:
                         continue
-                    if route._night_direct_param is not None:
+                    value = self._match_simple_dynamic_value(route, path)
+                    if value is not _NO_PATH_PARAM:
                         return route, value
-                    return route, {route._night_simple_dynamic[2]: value}
             probe = probe[:slash]
 
         routes = index.get("/")
         if routes:
             for route in routes:
-                value = self._match_simple_dynamic_value(route, path)
-                if value is _NO_PATH_PARAM:
+                if route._night_direct_param is None:
                     continue
-                if route._night_direct_param is not None:
+                value = self._match_simple_dynamic_value(route, path)
+                if value is not _NO_PATH_PARAM:
                     return route, value
-                return route, {route._night_simple_dynamic[2]: value}
         return None
-'''
-pat = re.compile(r'    def _match_prefixed_dynamic\(self, path: str, method: str\):\n.*?(?=\n    def _rebuild_dynamic_matcher)', re.S)
-s, n = pat.subn(new_prefixed.rstrip(), s, count=1)
-if n != 1:
-    raise SystemExit(f"prefixed matcher replacement count={n}")
 
-new_match = '''    def _match_method(self, path: str, method: str) -> tuple[Route, t.Any]:
+    def _match_method_fast(self, path: str, method: str) -> tuple[Route, t.Any]:
         key = path.rstrip("/") or "/"
 
+        # Static dispatch needs no path-param container at all.
         route = self._static_method_index.get(method, {}).get(key)
         if route is not None:
-            return route, {}
+            return route, None
 
         if key in self._static_methods_by_path:
             raise MethodNotAllowed(self._allowed_methods_for_path(path))
 
         routes = self._dynamic_method_routes.get(method)
-
-        # One dynamic route is common for tiny services. Direct one-parameter
-        # handlers receive the converted scalar itself rather than a temporary
-        # {name: value} dict.
         if routes and len(routes) == 1:
             route = routes[0]
-            if route._night_simple_dynamic is not None:
+            if route._night_simple_dynamic is not None and route._night_direct_param is not None:
                 value = self._match_simple_dynamic_value(route, key)
                 if value is not _NO_PATH_PARAM:
-                    if route._night_direct_param is not None:
-                        return route, value
-                    return route, {route._night_simple_dynamic[2]: value}
-            else:
-                match = route.pattern.match(path)
-                if match is not None:
-                    values = match.groups()
-                    params: dict[str, t.Any] = dict(zip(route.param_names, values))
-                    plan = route._night_plan
-                    for name in plan.int_params:
-                        value = params.get(name)
-                        if value is not None and type(value) is not int:
-                            try:
-                                params[name] = int(value)
-                            except (TypeError, ValueError):
-                                pass
-                    return route, params
-        else:
-            prefixed = self._match_prefixed_dynamic(key, method)
-            if prefixed is not None:
-                return prefixed
+                    return route, value
+        elif routes:
+            matched = self._match_prefixed_dynamic_fast(key, method)
+            if matched is not None:
+                return matched
 
-            # Generic fallback only for complex/multi-parameter routes.
-            if routes:
-                for route in routes:
-                    if route._night_simple_dynamic is not None:
-                        continue
-                    match = route.pattern.match(path)
-                    if match is None:
-                        continue
-                    values = match.groups()
-                    params = dict(zip(route.param_names, values))
-                    plan = route._night_plan
-                    for name in plan.int_params:
-                        value = params.get(name)
-                        if value is not None and type(value) is not int:
-                            try:
-                                params[name] = int(value)
-                            except (TypeError, ValueError):
-                                pass
-                    return route, params
+        # Complex routes, handlers needing request/body injection, and misses
+        # retain the exact historical dict-based behavior and error semantics.
+        return self._match_method(path, method)
 
-        allowed = self._allowed_methods_for_path(path)
-        if allowed:
-            raise MethodNotAllowed(allowed)
-        raise NotFound()
 '''
-pat = re.compile(r'    def _match_method\(self, path: str, method: str\).*?(?=\n    def )', re.S)
-s, n = pat.subn(new_match.rstrip(), s, count=1)
-if n != 1:
-    raise SystemExit(f"match_method replacement count={n}")
+marker = "    def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, t.Any]]:\n"
+if "def _match_method_fast" not in s:
+    if marker not in s:
+        raise SystemExit("match method marker not found")
+    s = s.replace(marker, insert_fast + marker, 1)
 
 new_call = '''    async def _call_route(self, route: Route, req: Request, params: t.Any) -> Response:
         plan = route._night_plan
         fn = route.endpoint
 
         direct_param = getattr(route, "_night_direct_param", None)
-        if direct_param is not None:
-            # Normal optimized dispatch passes the raw converted scalar. Keep
-            # dict support for compatibility callers that invoke _call_route
-            # directly with the historical params representation.
+        if direct_param is not None and params is not None:
+            # Optimized dispatch passes a converted scalar. Compatibility
+            # callers can still provide the historical {name: value} dict.
             if isinstance(params, dict):
                 result = fn(params[direct_param])
             else:
                 result = fn(params)
+        elif params is None and plan.body_model is None:
+            # Static production dispatch does not allocate an empty params dict.
+            if plan.call_mode == CALL_REQUEST_KEYWORD:
+                result = fn(req=req)
+            elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+                result = fn(req)
+            else:
+                result = fn()
         else:
-            kwargs = params
+            kwargs = {} if params is None else params
 
             if plan.body_model is not None:
                 payload = await req.json()
@@ -198,4 +157,46 @@ s, n = pat.subn(new_call.rstrip(), s, count=1)
 if n != 1:
     raise SystemExit(f"call_route replacement count={n}")
 
+new_dispatch = '''    async def _dispatch(self, req: Request) -> Response:
+        early = await self._run_before_hooks(req)
+        if early is not None:
+            return early
+
+        route, params = self._match_method_fast(req.path, req.method)
+        if params is None:
+            req.path_params.clear()
+        elif isinstance(params, dict):
+            req.path_params = params
+        else:
+            # Reuse the Request's already-allocated path_params dict instead of
+            # creating a second temporary dict in the router.
+            req.path_params.clear()
+            req.path_params[route._night_direct_param] = params
+
+        resp = await self._call_route(route, req, params)
+        resp = await self._run_after_hooks(req, resp)
+        return resp
+'''
+pat = re.compile(r'    async def _dispatch\(self, req: Request\) -> Response:\n.*?(?=\n    async def |\n    def )', re.S)
+s, n = pat.subn(new_dispatch.rstrip(), s, count=1)
+if n != 1:
+    raise SystemExit(f"dispatch replacement count={n}")
+
 p.write_text(s)
+
+# Make the internal benchmark exercise the production-only matcher for Night,
+# while LegacyNight continues to measure the historical path.
+b = Path("benchmarks/fast_path.py")
+bs = b.read_text()
+old = '''    for _ in range(iterations):
+        route, params = app._match_method(path, "GET")
+        await app._call_route(route, req, params)
+'''
+new = '''    matcher = app._match_method if isinstance(app, LegacyNight) else app._match_method_fast
+    for _ in range(iterations):
+        route, params = matcher(path, "GET")
+        await app._call_route(route, req, params)
+'''
+if old not in bs:
+    raise SystemExit("benchmark hot-path block not found")
+b.write_text(bs.replace(old, new, 1))
