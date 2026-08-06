@@ -1,0 +1,45 @@
+name: Apply Hotpath Round2
+on:
+  push:
+    branches: ["perf/hotpath-round2"]
+    paths:
+      - "tools/apply_hotpath_round2.py"
+      - ".github/workflows/apply-hotpath-round2.yml"
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/hotpath-round2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply changes
+        run: python tools/apply_hotpath_round2.py
+      - name: Validate
+        run: |
+          python -m py_compile night.py
+          python -m pip install pytest orjson
+          python -m pytest -q tests
+          python - <<'PY'
+          import orjson
+          from night import JSONResponse, Request
+          r = JSONResponse({'ok': True}, dumps=orjson.dumps)
+          assert r.body == b'{"ok":true}'
+          scope={'headers':[(b'x-a',b'1'),(b'content-type',b'application/json'),(b'content-type',b'text/plain')]}
+          q=Request(scope, lambda: None, lambda e: None)
+          assert q.header('content-type') == 'text/plain'
+          assert q.header('missing','x') == 'x'
+          assert q.headers['content-type'] == 'text/plain'
+          print('extra validation ok')
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add night.py
+          git commit -m "Optimize response and request hot paths"
+          git push origin HEAD:perf/hotpath-round2
