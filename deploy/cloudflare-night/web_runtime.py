@@ -23,14 +23,10 @@ async def request_from_web(request: t.Any, *, max_body_size: int) -> Request:
     parsed = urllib.parse.urlsplit(str(request.url))
     method = str(request.method).upper()
 
-    headers: list[tuple[bytes, bytes]] = []
-    try:
-        iterator = request.headers.entries()
-        for key, value in iterator:
-            headers.append((str(key).lower().encode("latin-1"), str(value).encode("latin-1")))
-    except Exception:
-        for key, value in request.headers:
-            headers.append((str(key).lower().encode("latin-1"), str(value).encode("latin-1")))
+    headers = [
+        (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
+        for key, value in dict(request.headers).items()
+    ]
 
     body = b""
     if method not in {"GET", "HEAD"}:
@@ -68,22 +64,15 @@ def response_to_web(response: Response, *, response_class: t.Any) -> t.Any:
     headers: dict[str, str] = dict(response.headers)
     raw_headers = getattr(response, "raw_headers", ())
     if raw_headers:
-        try:
-            from js import Headers  # type: ignore
+        for key, value in raw_headers:
+            if str(key) not in headers:
+                headers[str(key)] = str(value)
 
-            web_headers = Headers.new()
-            for key, value in headers.items():
-                web_headers.set(key, value)
-            for key, value in raw_headers:
-                web_headers.append(str(key), str(value))
-            headers_value: t.Any = web_headers
-        except Exception:
-            headers_value = headers
-    else:
-        headers_value = headers
-
-    init = {"status": int(response.status), "headers": headers_value}
-    return response_class.new(bytes(body), init)
+    return response_class(
+        bytes(body),
+        status=int(response.status),
+        headers=headers,
+    )
 
 
 async def fetch(app: t.Any, request: t.Any, *, response_class: t.Any) -> t.Any:
