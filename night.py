@@ -1675,6 +1675,134 @@ class Night(Router):
             except Exception as exc:
                 return jsonify({"jsonrpc": "2.0", "error": {"code": -32603, "message": str(exc)}, "id": call.get("id")}, status=500)
 
+    async def cloudflare_rpc(
+        self,
+        method: str,
+        args: t.Any = None,
+        kwargs: t.Any = None,
+    ) -> t.Any:
+        """Invoke a registered ``@app.rpc`` method over Workers RPC.
+
+        The Cloudflare runtime SDK owns the Python <-> JavaScript/RPC value
+        conversion. Keeping this bridge lazy preserves Night's zero-dependency
+        behavior outside Cloudflare Workers.
+        """
+        try:
+            from workers.rpc import python_from_rpc, python_to_rpc
+        except ImportError as exc:
+            raise RuntimeError(
+                "Cloudflare RPC requires workers-runtime-sdk inside a Python Worker"
+            ) from exc
+
+        fn = self.rpc_methods.get(str(method))
+        if fn is None:
+            raise KeyError(f"Unknown Night RPC method: {method}")
+
+        call_args = python_from_rpc(args) if args is not None else []
+        call_kwargs = python_from_rpc(kwargs) if kwargs is not None else {}
+        if not isinstance(call_args, (list, tuple)):
+            raise TypeError("Workers RPC args must be a list or tuple")
+        if not isinstance(call_kwargs, dict):
+            raise TypeError("Workers RPC kwargs must be a mapping")
+
+        result = fn(*call_args, **call_kwargs)
+        if inspect.isawaitable(result):
+            result = await t.cast(t.Awaitable, result)
+        return python_to_rpc(result)
+
+    async def cloudflare_fetch(self, request: t.Any, *, response_class: t.Any = None) -> t.Any:
+        """Serve a Cloudflare Workers Request through Night's ASGI core.
+
+        This embeds the old portable/web adapter path into Night itself. It
+        accepts the official ``workers.Request`` wrapper and also keeps a
+        fallback for raw JS Request objects used by older compatibility dates.
+        """
+        try:
+            if response_class is None:
+                from workers import Response as response_class
+        except ImportError as exc:
+            raise RuntimeError(
+                "Cloudflare fetch integration requires workers-runtime-sdk"
+            ) from exc
+
+        parsed = urllib.parse.urlsplit(str(request.url))
+        method_value = getattr(request.method, "value", request.method)
+        method = str(method_value).upper()
+
+        header_source = getattr(request, "headers", ())
+        try:
+            header_items = header_source.items()
+        except Exception:
+            try:
+                header_items = dict(header_source).items()
+            except Exception:
+                header_items = ()
+        headers = [
+            (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
+            for key, value in header_items
+        ]
+
+        body = b""
+        if method not in {"GET", "HEAD"}:
+            if hasattr(request, "bytes"):
+                body = bytes(await request.bytes())
+            else:
+                raw = await request.arrayBuffer()
+                try:
+                    body = bytes(raw.to_py())
+                except Exception:
+                    body = bytes(raw)
+            if len(body) > self.max_body_size:
+                raise HTTPError(413, "Request body too large")
+
+        encoded_path = parsed.path or "/"
+        decoded_path = urllib.parse.unquote(encoded_path)
+        scheme = parsed.scheme or "https"
+        port = parsed.port or (443 if scheme == "https" else 80)
+        scope = {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": scheme,
+            "path": decoded_path,
+            "raw_path": encoded_path.encode("utf-8"),
+            "query_string": parsed.query.encode("latin-1"),
+            "headers": headers,
+            "server": (parsed.hostname or "edge", port),
+            "client": None,
+        }
+
+        received = False
+        async def receive():
+            nonlocal received
+            if received:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            received = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        events: list[dict[str, t.Any]] = []
+        async def send(event):
+            events.append(event)
+
+        await self(scope, receive, send)
+        start = next((event for event in events if event.get("type") == "http.response.start"), None)
+        if start is None:
+            raise RuntimeError("Night produced no HTTP response start event")
+        chunks = [
+            event.get("body", b"")
+            for event in events
+            if event.get("type") == "http.response.body"
+        ]
+        web_headers = [
+            (key.decode("latin-1"), value.decode("latin-1"))
+            for key, value in start.get("headers", ())
+        ]
+        return response_class(
+            b"".join(chunks),
+            status=int(start["status"]),
+            headers=web_headers,
+        )
+
     def openapi(self) -> dict[str, t.Any]:
         paths: dict[str, dict[str, t.Any]] = {}
         for route in self.routes:

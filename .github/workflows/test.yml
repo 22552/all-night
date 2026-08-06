@@ -31,4 +31,4 @@ jobs:
         run: |
           cd deploy/cloudflare-night
           npm run build
-          python -m py_compile src/night.py src/portable_runtime.py src/web_runtime.py src/entry.py
+          python -m py_compile src/night.py src/entry.py

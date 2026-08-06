@@ -24,14 +24,15 @@ def test_cloudflare_deploy_template_config():
     assert "raw.githubusercontent.com/22552/all-night" in build
     assert "-o src/night.py" in build
     assert "night_fast.py" not in build
-    assert "cp portable_runtime.py src/portable_runtime.py" in build
-    assert "cp web_runtime.py src/web_runtime.py" in build
+    assert "portable_runtime.py" not in build
+    assert "web_runtime.py" not in build
+    assert "../../night.py" in build
     assert deploy == "npx wrangler deploy"
 
 
 def test_cloudflare_deploy_template_python_compiles():
-    py_compile.compile(str(ROOT / "portable_runtime.py"), doraise=True)
-    py_compile.compile(str(ROOT / "web_runtime.py"), doraise=True)
+    assert not (ROOT / "portable_runtime.py").exists()
+    assert not (ROOT / "web_runtime.py").exists()
     py_compile.compile(str(ROOT / "src" / "entry.py"), doraise=True)
 
 
@@ -49,6 +50,10 @@ def test_cloudflare_todo_routes_are_present():
     assert "await _kv.put" in entry
     assert "await _kv.delete" in entry
     assert "Night + Cloudflare Python Workers + KV" in entry
+    assert '@app.rpc("todo_count")' in entry
+    assert "async def night_rpc" in entry
+    assert "app.cloudflare_fetch(request)" in entry
+    assert "app.cloudflare_rpc(method, args, kwargs)" in entry
 
 
 def test_cloudflare_deploy_button_points_to_template():

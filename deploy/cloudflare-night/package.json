@@ -2,7 +2,7 @@
   "name": "night-cloudflare-deploy",
   "private": true,
   "scripts": {
-    "build": "curl -fsSL https://raw.githubusercontent.com/22552/all-night/9a241910b8f888a67720c8b80bde1b139604faff/night.py -o src/night.py && cp portable_runtime.py src/portable_runtime.py && cp web_runtime.py src/web_runtime.py",
+    "build": "if [ -f ../../night.py ]; then cp ../../night.py src/night.py; else curl -fsSL https://raw.githubusercontent.com/22552/all-night/main/night.py -o src/night.py; fi",
     "deploy": "npx wrangler deploy"
   }
 }
