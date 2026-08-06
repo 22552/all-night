@@ -1331,6 +1331,7 @@ class _EndpointPlan:
     signature: inspect.Signature | None
     type_hints: dict[str, t.Any]
     call_mode: int
+    is_coro: bool
     int_params: tuple[str, ...]
     body_model: type | None
     body_candidates: tuple[str, ...]
@@ -1372,6 +1373,7 @@ def _compile_endpoint(fn: t.Callable) -> _EndpointPlan:
         signature=signature,
         type_hints=type_hints,
         call_mode=call_mode,
+        is_coro=inspect.iscoroutinefunction(fn),
         int_params=tuple(int_params),
         body_model=getattr(fn, "__night_body_model__", None),
         body_candidates=tuple(body_candidates),
@@ -1390,6 +1392,8 @@ class Night(Router):
         self._css_cache: str | None = None
         self._static_route_index: dict[str, list[Route]] = {}
         self._dynamic_route_index: list[Route] = []
+        self._dynamic_method_routes: dict[str, list[Route]] = {}
+        self._dynamic_method_matchers: dict[str, tuple[re.Pattern, list[Route]]] = {}
         self._static_method_index: dict[str, dict[str, Route]] = {}
         self._static_methods_by_path: dict[str, set[str]] = {}
         self._endpoint_plans: dict[t.Callable, _EndpointPlan] = {}
@@ -1411,9 +1415,15 @@ class Night(Router):
 
     def _on_route_added(self, route: Route):
         key = route.raw_path.rstrip("/") or "/"
-        self._endpoint_plans[route.endpoint] = _compile_endpoint(route.endpoint)
+        plan = _compile_endpoint(route.endpoint)
+        self._endpoint_plans[route.endpoint] = plan
+        route._night_plan = plan
         if "<" in route.raw_path:
             self._dynamic_route_index.append(route)
+            for method in route.methods:
+                routes = self._dynamic_method_routes.setdefault(method, [])
+                routes.append(route)
+                self._rebuild_dynamic_matcher(method)
             return
 
         self._static_route_index.setdefault(key, []).append(route)
@@ -1421,6 +1431,22 @@ class Night(Router):
         for method in route.methods:
             methods.add(method)
             self._static_method_index.setdefault(method, {})[key] = route
+
+    def _rebuild_dynamic_matcher(self, method: str) -> None:
+        routes = self._dynamic_method_routes.get(method, ())
+        if len(routes) < 2:
+            self._dynamic_method_matchers.pop(method, None)
+            return
+        branches = []
+        for route in routes:
+            body = route.pattern.pattern
+            if body.startswith("^"):
+                body = body[1:]
+            if body.endswith("$"):
+                body = body[:-1]
+            body = re.sub(r"\(\?P<[^>]+>", "(?:", body)
+            branches.append(f"({body})")
+        self._dynamic_method_matchers[method] = (re.compile("^(?:" + "|".join(branches) + ")$"), list(routes))
 
     def enable_css(self, *, minify: bool = False):
         self.css_minify = minify
@@ -1642,6 +1668,8 @@ class Night(Router):
             )
         self._static_route_index.clear()
         self._dynamic_route_index.clear()
+        self._dynamic_method_routes.clear()
+        self._dynamic_method_matchers.clear()
         self._static_method_index.clear()
         self._static_methods_by_path.clear()
         self._endpoint_plans.clear()
@@ -1669,11 +1697,9 @@ class Night(Router):
                 return r, m.groupdict()
         raise NotFound()
 
-    def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, str]]:
+    def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, t.Any]]:
         key = path.rstrip("/") or "/"
 
-        # Hono-style hot path: exact static routes are two hash lookups and
-        # avoid regex matching entirely. Dynamic routes use the proven matcher.
         route = self._static_method_index.get(method, {}).get(key)
         if route is not None:
             return route, {}
@@ -1681,38 +1707,58 @@ class Night(Router):
         if key in self._static_methods_by_path:
             raise MethodNotAllowed(self._allowed_methods_for_path(path))
 
-        path_matched = False
-        for route in self._dynamic_route_index:
-            match = route.pattern.match(path)
-            if not match:
-                continue
-            path_matched = True
-            if method in route.methods:
-                return route, match.groupdict()
-        if path_matched:
-            raise MethodNotAllowed(self._allowed_methods_for_path(path))
+        routes = self._dynamic_method_routes.get(method)
+        if routes:
+            if len(routes) == 1:
+                route = routes[0]
+                match = route.pattern.match(path)
+            else:
+                combined, indexed_routes = self._dynamic_method_matchers[method]
+                selected = combined.match(path)
+                if selected is None:
+                    match = None
+                    route = None
+                else:
+                    route = indexed_routes[(selected.lastindex or 1) - 1]
+                    match = route.pattern.match(path)
+
+            if route is not None and match is not None:
+                values = match.groups()
+                params: dict[str, t.Any] = dict(zip(route.param_names, values))
+                plan = route._night_plan
+                for name in plan.int_params:
+                    value = params.get(name)
+                    if value is not None and type(value) is not int:
+                        try:
+                            params[name] = int(value)
+                        except (TypeError, ValueError):
+                            pass
+                return route, params
+
+        allowed = self._allowed_methods_for_path(path)
+        if allowed:
+            raise MethodNotAllowed(allowed)
         raise NotFound()
 
     def _coerce_response(self, value: t.Any) -> Response:
-        if isinstance(value, Response):
-            return value
-        if isinstance(value, (dict, list)):
+        kind = type(value)
+        if kind is dict or kind is list:
             return JSONResponse(value)
-        if isinstance(value, str):
+        if kind is str:
             return PlainTextResponse(value)
-        if isinstance(value, (bytes, bytearray)):
+        if kind is bytes:
             return Response(value)
         if value is None:
             return Response(b"", status=204)
+        if isinstance(value, Response):
+            return value
+        if kind is bytearray:
+            return Response(value)
         return PlainTextResponse(str(value))
 
-    async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, str]) -> Response:
-        plan = self._endpoint_plans.get(fn)
-        if plan is None:
-            plan = _compile_endpoint(fn)
-            self._endpoint_plans[fn] = plan
-
-        kwargs: dict[str, t.Any] = dict(params)
+    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        plan = route._night_plan
+        kwargs = params.copy() if params else {}
 
         if plan.body_model is not None:
             payload = await req.json()
@@ -1723,13 +1769,7 @@ class Night(Router):
             else:
                 kwargs.setdefault("data", validated)
 
-        for name in plan.int_params:
-            if name in kwargs and not isinstance(kwargs[name], int):
-                try:
-                    kwargs[name] = int(kwargs[name])
-                except (TypeError, ValueError):
-                    pass
-
+        fn = route.endpoint
         if plan.call_mode == CALL_REQUEST_KEYWORD:
             result = fn(req=req, **kwargs)
         elif plan.call_mode == CALL_REQUEST_POSITIONAL:
@@ -1737,9 +1777,24 @@ class Night(Router):
         else:
             result = fn(**kwargs)
 
-        if inspect.isawaitable(result):
+        if plan.is_coro:
             result = await t.cast(t.Awaitable, result)
         return self._coerce_response(result)
+
+    async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, t.Any]) -> Response:
+        plan = self._endpoint_plans.get(fn)
+        if plan is None:
+            plan = _compile_endpoint(fn)
+            self._endpoint_plans[fn] = plan
+        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan)
+        for name in plan.int_params:
+            value = params.get(name)
+            if value is not None and type(value) is not int:
+                try:
+                    params[name] = int(value)
+                except (TypeError, ValueError):
+                    pass
+        return await self._call_route(route, req, params)
 
     async def _run_before_hooks(self, req: Request) -> Response | None:
         for fn in self.before_hooks:
@@ -1776,7 +1831,7 @@ class Night(Router):
 
         route, params = self._match_method(req.path, req.method)
         req.path_params = params
-        resp = await self._call_endpoint(route.endpoint, req, params)
+        resp = await self._call_route(route, req, params)
         resp = await self._run_after_hooks(req, resp)
         return resp
 
