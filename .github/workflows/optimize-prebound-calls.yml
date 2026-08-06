@@ -1,0 +1,37 @@
+name: Optimize Prebound Calls
+
+on:
+  push:
+    branches: ["perf/prebound-route-calls"]
+    paths:
+      - "tools/optimize_prebound_calls.py"
+      - ".github/workflows/optimize-prebound-calls.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/prebound-route-calls
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply optimization
+        run: python tools/optimize_prebound_calls.py
+      - name: Validate
+        run: |
+          python -m py_compile night.py
+          python -m pip install pytest Flask robyn
+          python -m pytest -q tests
+          python benchmarks/fast_path.py
+      - name: Commit optimized Night
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add night.py
+          git commit -m "Preclassify route call modes"
+          git push origin HEAD:perf/prebound-route-calls
