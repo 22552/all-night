@@ -4,16 +4,15 @@ import re
 p = Path("night.py")
 s = p.read_text()
 
-anchor = "CALL_REQUEST_POSITIONAL = 2\n"
+anchor = "CALL_REQUEST_KEYWORD = 2\n"
 if "ROUTE_CALL_GENERIC" not in s:
     if anchor not in s:
         raise SystemExit("call constants anchor not found")
     s = s.replace(anchor, anchor + "\nROUTE_CALL_GENERIC = 0\nROUTE_CALL_DIRECT_PARAM = 1\nROUTE_CALL_NOARGS = 2\nROUTE_CALL_REQUEST_KEYWORD = 3\nROUTE_CALL_REQUEST_POSITIONAL = 4\n", 1)
 
-# Add a registration-time route call classifier before _on_route_added.
 marker = "    def _on_route_added(self, route: Route):\n"
 helper = '''    @staticmethod
-    def _classify_route_call(route: Route, plan: EndpointPlan) -> None:
+    def _classify_route_call(route: Route, plan: _EndpointPlan) -> None:
         if plan.body_model is not None:
             route._night_call_kind = ROUTE_CALL_GENERIC
             return
@@ -38,14 +37,12 @@ if "def _classify_route_call" not in s:
         raise SystemExit("on_route marker not found")
     s = s.replace(marker, helper + marker, 1)
 
-# Ensure route starts generic, then classify once direct-param detection is known.
-s = s.replace(
-    "        route._night_direct_param = None\n\n        if \"<\" in route.raw_path:\n",
-    "        route._night_direct_param = None\n        route._night_call_kind = ROUTE_CALL_GENERIC\n\n        if \"<\" in route.raw_path:\n",
-    1,
-)
+needle = "        route._night_direct_param = None\n\n        if \"<\" in route.raw_path:\n"
+replacement = "        route._night_direct_param = None\n        route._night_call_kind = ROUTE_CALL_GENERIC\n\n        if \"<\" in route.raw_path:\n"
+if needle not in s:
+    raise SystemExit("route init anchor not found")
+s = s.replace(needle, replacement, 1)
 
-# Dynamic route returns after indexing; classify immediately before that return.
 needle = '''                self._rebuild_dynamic_matcher(method)
             return
 
@@ -105,7 +102,6 @@ s, n = pat.subn(new_call.rstrip(), s, count=1)
 if n != 1:
     raise SystemExit(f"call route replacement count={n}")
 
-# Compatibility wrapper constructs a synthetic route; classify it too.
 old = "        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan)\n"
 new = "        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan, _night_direct_param=None, _night_call_kind=ROUTE_CALL_GENERIC)\n        self._classify_route_call(route, plan)\n"
 if old not in s:
