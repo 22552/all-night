@@ -1,14 +1,13 @@
+import json
+import uuid
+
 from night import HTMLResponse, Night
 from web_runtime import CloudflareWorkerMixin
 from workers import Response, WorkerEntrypoint
 
 
 app = Night()
-_todos: list[dict] = [
-    {"id": 1, "title": "Deploy Night to Cloudflare", "done": True},
-    {"id": 2, "title": "Add a todo", "done": False},
-]
-_next_id = 3
+_kv = None
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -22,7 +21,7 @@ h1{margin-bottom:4px}.sub{color:#999;margin-top:0}form{display:flex;gap:8px;marg
 </style>
 </head>
 <body>
-<h1>Night ToDo</h1><p class="sub">Night + Cloudflare Python Workers</p>
+<h1>Night ToDo</h1><p class="sub">Night + Cloudflare Python Workers + KV</p>
 <form id="form"><input id="title" placeholder="What needs doing?" autocomplete="off"><button class="add">Add</button></form>
 <ul id="list"></ul>
 <script>
@@ -34,52 +33,88 @@ form.onsubmit=async e=>{e.preventDefault();const title=input.value.trim();if(!ti
 </html>"""
 
 
+def _todo_key(todo_id: str) -> str:
+    return f"todo:{todo_id}"
+
+
+async def _get_todo(todo_id: str):
+    raw = await _kv.get(_todo_key(todo_id))
+    if raw is None:
+        return None
+    return json.loads(str(raw))
+
+
 @app.get("/")
 def index():
     return HTMLResponse(PAGE)
 
 
 @app.get("/api/todos")
-def list_todos():
-    return list(_todos)
+async def list_todos():
+    result = await _kv.list(prefix="todo:")
+    keys = result.get("keys", [])
+    todos = []
+    for item in keys:
+        name = item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+        if not name:
+            continue
+        raw = await _kv.get(name)
+        if raw is not None:
+            todos.append(json.loads(str(raw)))
+    todos.sort(key=lambda todo: todo.get("created", ""), reverse=True)
+    return todos
 
 
 @app.post("/api/todos")
 async def create_todo(req):
-    global _next_id
     data = await req.json()
     title = str(data.get("title", "")).strip() if isinstance(data, dict) else ""
     if not title:
         return {"error": "title is required"}
-    todo = {"id": _next_id, "title": title[:200], "done": False}
-    _next_id += 1
-    _todos.append(todo)
+
+    todo_id = uuid.uuid4().hex
+    todo = {
+        "id": todo_id,
+        "title": title[:200],
+        "done": False,
+        "created": todo_id,
+    }
+    await _kv.put(_todo_key(todo_id), json.dumps(todo, separators=(",", ":")))
     return todo
 
 
-@app.patch("/api/todos/<int:id>")
-async def update_todo(req, id: int):
+@app.patch("/api/todos/<id>")
+async def update_todo(req, id: str):
+    todo = await _get_todo(id)
+    if todo is None:
+        return {"error": "todo not found"}
+
     data = await req.json()
-    for todo in _todos:
-        if todo["id"] == id:
-            if isinstance(data, dict) and "title" in data:
-                title = str(data["title"]).strip()
-                if title:
-                    todo["title"] = title[:200]
-            if isinstance(data, dict) and "done" in data:
-                todo["done"] = bool(data["done"])
-            return todo
-    return {"error": "todo not found"}
+    if isinstance(data, dict) and "title" in data:
+        title = str(data["title"]).strip()
+        if title:
+            todo["title"] = title[:200]
+    if isinstance(data, dict) and "done" in data:
+        todo["done"] = bool(data["done"])
+
+    await _kv.put(_todo_key(id), json.dumps(todo, separators=(",", ":")))
+    return todo
 
 
-@app.delete("/api/todos/<int:id>")
-def delete_todo(id: int):
-    for index, todo in enumerate(_todos):
-        if todo["id"] == id:
-            return _todos.pop(index)
-    return {"error": "todo not found"}
+@app.delete("/api/todos/<id>")
+async def delete_todo(id: str):
+    todo = await _get_todo(id)
+    if todo is None:
+        return {"error": "todo not found"}
+    await _kv.delete(_todo_key(id))
+    return todo
 
 
 class Default(CloudflareWorkerMixin, WorkerEntrypoint):
     app = app
     web_response_class = Response
+
+    async def fetch(self, request):
+        global _kv
+        _kv = self.env.TODOS
+        return await CloudflareWorkerMixin.fetch(self, request)

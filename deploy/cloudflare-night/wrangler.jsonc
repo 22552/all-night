@@ -3,5 +3,10 @@
   "name": "night-python-worker",
   "main": "src/entry.py",
   "compatibility_date": "2025-12-01",
-  "compatibility_flags": ["python_workers"]
+  "compatibility_flags": ["python_workers"],
+  "kv_namespaces": [
+    {
+      "binding": "TODOS"
+    }
+  ]
 }
