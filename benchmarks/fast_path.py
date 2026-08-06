@@ -13,8 +13,6 @@ production throughput benchmark. Each framework's test client has different
 amounts of bookkeeping.
 """
 
-from __future__ import annotations
-
 import asyncio
 from pathlib import Path
 import statistics
@@ -116,7 +114,7 @@ def _night_dynamic_handler(value: int):
     return handler
 
 
-def build(app_type):
+def build_night(app_type, *, many_dynamic: bool):
     app = app_type()
 
     for index in range(200):
@@ -131,8 +129,9 @@ def build(app_type):
     def user(id: int):
         return {"id": id}
 
-    for index in range(200):
-        app.get(f"/dynamic/{index}/<int:id>")(_night_dynamic_handler(index))
+    if many_dynamic:
+        for index in range(200):
+            app.get(f"/dynamic/{index}/<int:id>")(_night_dynamic_handler(index))
 
     return app
 
@@ -159,25 +158,28 @@ def _flask_dynamic_handler(value: int):
     return handler
 
 
-def build_flask():
+def build_flask(*, many_dynamic: bool):
     from flask import Flask
 
     app = Flask("night-bench")
     for index in range(200):
-        endpoint = f"static_{index}"
-        path = f"/static/{index}"
-        app.add_url_rule(path, endpoint, lambda index=index: str(index))
+        app.add_url_rule(
+            f"/static/{index}",
+            f"static_{index}",
+            lambda index=index: str(index),
+        )
 
     @app.get("/users/<int:id>")
     def user(id: int):
         return {"id": id}
 
-    for index in range(200):
-        app.add_url_rule(
-            f"/dynamic/{index}/<int:id>",
-            f"dynamic_{index}",
-            _flask_dynamic_handler(index),
-        )
+    if many_dynamic:
+        for index in range(200):
+            app.add_url_rule(
+                f"/dynamic/{index}/<int:id>",
+                f"dynamic_{index}",
+                _flask_dynamic_handler(index),
+            )
 
     return app, app.test_client()
 
@@ -194,7 +196,7 @@ def _robyn_dynamic_handler(value: int):
     return handler
 
 
-def build_robyn():
+def build_robyn(*, many_dynamic: bool):
     from robyn import Robyn
     from robyn.testing import TestClient
 
@@ -202,14 +204,27 @@ def build_robyn():
     for index in range(200):
         app.get(f"/static/{index}")(_robyn_static_handler(index))
 
-    @app.get("/users/:id")
     def user(request, id: int):
         return {"id": id}
+    app.get("/users/:id")(user)
 
-    for index in range(200):
-        app.get(f"/dynamic/{index}/:id")(_robyn_dynamic_handler(index))
+    if many_dynamic:
+        for index in range(200):
+            app.get(f"/dynamic/{index}/:id")(_robyn_dynamic_handler(index))
 
     return app, TestClient(app)
+
+
+def public_clients(*, many_dynamic: bool):
+    night = build_night(Night, many_dynamic=many_dynamic).test_client()
+    flask_app, flask = build_flask(many_dynamic=many_dynamic)
+    robyn_app, robyn = build_robyn(many_dynamic=many_dynamic)
+    assert flask_app is not None and robyn_app is not None
+    return {
+        "Night": lambda path: night.get(path),
+        "Flask": lambda path: flask.get(path),
+        "Robyn": lambda path: robyn.get(path),
+    }
 
 
 def bench_public_clients():
@@ -219,22 +234,21 @@ def bench_public_clients():
     iterations = 500
     rounds = 3
 
-    night = build(Night).test_client()
-    flask_app, flask = build_flask()
-    robyn_app, robyn = build_robyn()
-    assert flask_app is not None and robyn_app is not None
-
-    clients = {
-        "Night": lambda path: night.get(path),
-        "Flask": lambda path: flask.get(path),
-        "Robyn": lambda path: robyn.get(path),
-    }
-
-    for path in ("/static/199", "/users/42", "/dynamic/199/42"):
+    cases = (
+        ("/static/199", False),
+        ("/users/42", False),
+        ("/dynamic/199/42", True),
+    )
+    cached = {}
+    for path, many_dynamic in cases:
+        clients = cached.setdefault(many_dynamic, public_clients(many_dynamic=many_dynamic))
         print(f"\n{path}")
         for name, request in clients.items():
             request(path)
-            samples = [_bench_sync(lambda request=request, path=path: request(path), iterations) for _ in range(rounds)]
+            samples = [
+                _bench_sync(lambda request=request, path=path: request(path), iterations)
+                for _ in range(rounds)
+            ]
             median = statistics.median(samples)
             print(f"  {name:9s}: {median:10.1f} ns/op")
 
@@ -244,11 +258,16 @@ async def main_hot_path():
     rounds = 5
 
     print("Night internal hot-path benchmark")
-    for path in ("/static/199", "/users/42", "/dynamic/199/42"):
+    cases = (
+        ("/static/199", False),
+        ("/users/42", False),
+        ("/dynamic/199/42", True),
+    )
+    for path, many_dynamic in cases:
         print(f"\n{path}")
         results = {}
         for app_type in (LegacyNight, Night):
-            app = build(app_type)
+            app = build_night(app_type, many_dynamic=many_dynamic)
             samples = [await bench_night_hot_path(app, path, iterations) for _ in range(rounds)]
             median = statistics.median(samples)
             results[app_type.__name__] = median
