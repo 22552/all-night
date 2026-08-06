@@ -1,0 +1,37 @@
+name: Optimize Dictless Params
+
+on:
+  push:
+    branches: ["perf/dictless-path-params"]
+    paths:
+      - "tools/optimize_dictless_params.py"
+      - ".github/workflows/optimize-dictless-params.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/dictless-path-params
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply optimization
+        run: python tools/optimize_dictless_params.py
+      - name: Validate
+        run: |
+          python -m py_compile night.py
+          python -m pip install pytest Flask robyn
+          python -m pytest -q tests
+          python benchmarks/fast_path.py
+      - name: Commit optimized Night
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add night.py
+          git commit -m "Eliminate path-param dict on direct routes"
+          git push origin HEAD:perf/dictless-path-params
