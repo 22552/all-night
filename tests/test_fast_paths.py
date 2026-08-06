@@ -66,6 +66,26 @@ def test_dynamic_routes_fall_back_and_convert_int_params():
     assert b'"id":42' in response.body
 
 
+def test_combined_dynamic_matcher_selects_route_and_converts_params():
+    app = Night()
+
+    @app.get("/users/<int:id>")
+    def user(id: int):
+        return {"kind": "user", "id": id}
+
+    @app.get("/posts/<int:id>")
+    def post(id: int):
+        return {"kind": "post", "id": id}
+
+    assert "GET" in app._dynamic_method_matchers
+    route, params = app._match_method("/posts/42", "GET")
+    assert route.endpoint is post
+    assert params == {"id": 42}
+    response = asyncio.run(app._call_route(route, _request("/posts/42"), params))
+    assert b'"kind":"post"' in response.body
+    assert b'"id":42' in response.body
+
+
 def test_request_injection_plan_is_compiled_at_registration():
     app = Night()
 
@@ -77,6 +97,21 @@ def test_request_injection_plan_is_compiled_at_registration():
     route, params = app._match_method("/method", "GET")
     response = asyncio.run(app._call_endpoint(route.endpoint, _request("/method"), params))
     assert response.body == b"GET"
+
+
+def test_sync_async_classification_is_compiled_at_registration():
+    app = Night()
+
+    @app.get("/sync")
+    def sync_handler():
+        return "sync"
+
+    @app.get("/async")
+    async def async_handler():
+        return "async"
+
+    assert app._endpoint_plans[sync_handler].is_coro is False
+    assert app._endpoint_plans[async_handler].is_coro is True
 
 
 def test_mount_rebuilds_fast_index():
