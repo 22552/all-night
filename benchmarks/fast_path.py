@@ -216,8 +216,8 @@ def bench_public_clients():
     print("\nIn-process public client benchmark")
     print("  (different test clients do different bookkeeping; treat as rough comparison)")
 
-    iterations = 2_000
-    rounds = 5
+    iterations = 500
+    rounds = 3
 
     night = build(Night).test_client()
     flask_app, flask = build_flask()
@@ -240,8 +240,8 @@ def bench_public_clients():
 
 
 async def main_hot_path():
-    iterations = 20_000
-    rounds = 7
+    iterations = 5_000
+    rounds = 5
 
     print("Night internal hot-path benchmark")
     for path in ("/static/199", "/users/42", "/dynamic/199/42"):
