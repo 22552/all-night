@@ -42,6 +42,7 @@ import re
 import sys
 import tempfile
 import traceback
+import time
 import typing as t
 import urllib.parse
 from email import policy
@@ -134,6 +135,17 @@ def _http_date(dt: _dt.datetime | None = None) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
     return email.utils.format_datetime(dt, usegmt=True)
+
+_HTTP_DATE_CACHE_SECOND = -1
+_HTTP_DATE_CACHE_VALUE = ""
+
+def _cached_http_date() -> str:
+    global _HTTP_DATE_CACHE_SECOND, _HTTP_DATE_CACHE_VALUE
+    second = int(time.time())
+    if second != _HTTP_DATE_CACHE_SECOND:
+        _HTTP_DATE_CACHE_SECOND = second
+        _HTTP_DATE_CACHE_VALUE = email.utils.formatdate(second, usegmt=True)
+    return _HTTP_DATE_CACHE_VALUE
 
 
 def _parse_http_date(s: str) -> _dt.datetime | None:
@@ -501,6 +513,7 @@ class Request:
     path_params: dict[str, t.Any] = dataclasses.field(default_factory=dict)
     max_body_size: int = MAX_BODY_SIZE
     _headers: dict[str, str] | None = dataclasses.field(default=None, init=False)
+    _header_cache: dict[str, str | None] = dataclasses.field(default_factory=dict, init=False)
 
     @property
     def method(self) -> str:
@@ -532,7 +545,24 @@ class Request:
         return hs
 
     def header(self, name: str, default: str | None = None) -> str | None:
-        return self.headers.get(name.lower(), default)
+        key = name.lower()
+        if self._headers is not None:
+            return self._headers.get(key, default)
+        if key in self._header_cache:
+            value = self._header_cache[key]
+            return default if value is None else value
+
+        target = key.encode("latin-1")
+        value = None
+        headers = self.scope.get("headers") or ()
+        # Search from the end to preserve the previous "last value wins"
+        # behavior without decoding unrelated headers. ASGI headers are a list.
+        for raw_name, raw_value in reversed(headers):
+            if raw_name == target or raw_name.lower() == target:
+                value = raw_value.decode("latin-1")
+                break
+        self._header_cache[key] = value
+        return default if value is None else value
 
     @property
     def trace_id(self) -> str:
@@ -872,7 +902,7 @@ class Response:
         if content_type is not None:
             self.headers["content-type"] = content_type
         if "date" not in self.headers:
-            self.headers["date"] = _http_date()
+            self.headers["date"] = _cached_http_date()
         if "content-length" not in self.headers:
             self.headers["content-length"] = str(len(self.body))
 
@@ -969,7 +999,7 @@ class StreamingResponse(Response):
         if content_type is not None:
             self.headers.setdefault("content-type", content_type)
         if "date" not in self.headers:
-            self.headers["date"] = _http_date()
+            self.headers["date"] = _cached_http_date()
         # Intentionally omit content-length
         self.body = b""  # compatibility
 
@@ -1040,7 +1070,13 @@ class JSONResponse(Response):
         while keeping night single-file.
         """
 
-        body = dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if dumps is json.dumps:
+            encoded = dumps(data, ensure_ascii=False, separators=(",", ":"))
+        else:
+            # Fast serializers such as orjson return bytes and generally do
+            # not accept json.dumps keyword arguments.
+            encoded = dumps(data)
+        body = encoded if isinstance(encoded, bytes) else str(encoded).encode("utf-8")
         h = dict(headers or {})
         h.setdefault("content-type", "application/json; charset=utf-8")
         super().__init__(body=body, status=status, headers=h)
@@ -1344,10 +1380,12 @@ class _EndpointPlan:
 
 
 def _compile_endpoint(fn: t.Callable) -> _EndpointPlan:
-    try:
-        signature = inspect.signature(fn)
-    except (TypeError, ValueError):
-        signature = None
+    signature = getattr(fn, "__night_signature__", None)
+    if signature is None:
+        try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError):
+            signature = None
 
     try:
         type_hints = t.get_type_hints(fn)
@@ -1813,9 +1851,11 @@ class Night(Router):
     def _match_method(self, path: str, method: str) -> tuple[Route, dict[str, t.Any]]:
         key = path.rstrip("/") or "/"
 
-        route = self._static_method_index.get(method, {}).get(key)
-        if route is not None:
-            return route, {}
+        method_routes = self._static_method_index.get(method)
+        if method_routes is not None:
+            route = method_routes.get(key)
+            if route is not None:
+                return route, {}
 
         if key in self._static_methods_by_path:
             raise MethodNotAllowed(self._allowed_methods_for_path(path))
