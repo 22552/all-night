@@ -1325,6 +1325,12 @@ CALL_KWARGS = 0
 CALL_REQUEST_POSITIONAL = 1
 CALL_REQUEST_KEYWORD = 2
 
+ROUTE_CALL_GENERIC = 0
+ROUTE_CALL_DIRECT_PARAM = 1
+ROUTE_CALL_NOARGS = 2
+ROUTE_CALL_REQUEST_KEYWORD = 3
+ROUTE_CALL_REQUEST_POSITIONAL = 4
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _EndpointPlan:
@@ -1414,6 +1420,26 @@ class Night(Router):
     def test_client(self) -> TestClient:
         return TestClient(self)
 
+    @staticmethod
+    def _classify_route_call(route: Route, plan: _EndpointPlan) -> None:
+        if plan.body_model is not None:
+            route._night_call_kind = ROUTE_CALL_GENERIC
+            return
+        if route._night_direct_param is not None:
+            route._night_call_kind = ROUTE_CALL_DIRECT_PARAM
+            return
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+            route._night_call_kind = ROUTE_CALL_REQUEST_KEYWORD
+            return
+        if plan.call_mode == CALL_REQUEST_POSITIONAL:
+            route._night_call_kind = ROUTE_CALL_REQUEST_POSITIONAL
+            return
+        sig = plan.signature
+        if plan.call_mode == CALL_KWARGS and sig is not None and not sig.parameters:
+            route._night_call_kind = ROUTE_CALL_NOARGS
+            return
+        route._night_call_kind = ROUTE_CALL_GENERIC
+
     def _on_route_added(self, route: Route):
         key = route.raw_path.rstrip("/") or "/"
         plan = _compile_endpoint(route.endpoint)
@@ -1421,6 +1447,7 @@ class Night(Router):
         route._night_plan = plan
         route._night_simple_dynamic = None
         route._night_direct_param = None
+        route._night_call_kind = ROUTE_CALL_GENERIC
 
         if "<" in route.raw_path:
             self._dynamic_route_index.append(route)
@@ -1459,8 +1486,10 @@ class Night(Router):
                     prefix = route._night_simple_dynamic[0]
                     self._dynamic_prefix_index.setdefault(method, {}).setdefault(prefix, []).append(route)
                 self._rebuild_dynamic_matcher(method)
+            self._classify_route_call(route, plan)
             return
 
+        self._classify_route_call(route, plan)
         self._static_route_index.setdefault(key, []).append(route)
         methods = self._static_methods_by_path.setdefault(key, set())
         for method in route.methods:
@@ -1863,14 +1892,17 @@ class Night(Router):
     async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
         plan = route._night_plan
         fn = route.endpoint
+        kind = route._night_call_kind
 
-        direct_param = getattr(route, "_night_direct_param", None)
-        if direct_param is not None:
-            result = fn(params[direct_param])
+        if kind == ROUTE_CALL_DIRECT_PARAM:
+            result = fn(params[route._night_direct_param])
+        elif kind == ROUTE_CALL_NOARGS:
+            result = fn()
+        elif kind == ROUTE_CALL_REQUEST_KEYWORD:
+            result = fn(req=req)
+        elif kind == ROUTE_CALL_REQUEST_POSITIONAL:
+            result = fn(req)
         else:
-            # params is freshly allocated by routing in normal dispatch, so do
-            # not copy it. Compatibility callers still receive equivalent
-            # behavior because only body validation mutates kwargs.
             kwargs = params
 
             if plan.body_model is not None:
@@ -1899,7 +1931,8 @@ class Night(Router):
         if plan is None:
             plan = _compile_endpoint(fn)
             self._endpoint_plans[fn] = plan
-        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan)
+        route = types.SimpleNamespace(endpoint=fn, _night_plan=plan, _night_direct_param=None, _night_call_kind=ROUTE_CALL_GENERIC)
+        self._classify_route_call(route, plan)
         for name in plan.int_params:
             value = params.get(name)
             if value is not None and type(value) is not int:
