@@ -1,0 +1,37 @@
+name: Optimize Python Router
+
+on:
+  push:
+    branches: ["perf/python-limit-router"]
+    paths:
+      - "tools/optimize_python_router.py"
+      - ".github/workflows/optimize-python-router.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/python-limit-router
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply optimization
+        run: python tools/optimize_python_router.py
+      - name: Validate
+        run: |
+          python -m py_compile night.py
+          python -m pip install pytest
+          python -m pytest -q tests
+          python benchmarks/fast_path.py
+      - name: Commit optimized Night
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add night.py
+          git commit -m "Add prefix-indexed Python dynamic router"
+          git push origin HEAD:perf/python-limit-router
