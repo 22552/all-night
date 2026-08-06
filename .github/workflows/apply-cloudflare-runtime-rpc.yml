@@ -5,6 +5,7 @@ on:
     branches: ["feat/cloudflare-runtime-rpc"]
     paths:
       - "tools/apply_cloudflare_runtime_rpc.py"
+      - "tools/patch_cloudflare_runtime_tests.py"
       - ".github/workflows/apply-cloudflare-runtime-rpc.yml"
 
 permissions:
@@ -21,7 +22,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Apply migration
-        run: python tools/apply_cloudflare_runtime_rpc.py
+        run: |
+          python tools/apply_cloudflare_runtime_rpc.py
+          python tools/patch_cloudflare_runtime_tests.py
       - name: Validate Python
         run: |
           python -m py_compile night.py deploy/cloudflare-night/src/entry.py
@@ -39,6 +42,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add night.py deploy/cloudflare-night .github/workflows/test.yml
+          git add night.py deploy/cloudflare-night tests/test_cloudflare_deploy_template.py .github/workflows/test.yml
           git commit -m "Embed Cloudflare runtime bridge and Workers RPC"
           git push origin HEAD:feat/cloudflare-runtime-rpc
