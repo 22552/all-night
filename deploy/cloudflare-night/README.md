@@ -51,6 +51,7 @@ Wrangler creates a local KV resource automatically for local development.
 ## Notes
 
 - The template uses the `python_workers` compatibility flag.
-- Night, the portable runtime adapter, and the Web runtime adapter are vendored into `src/` during the build.
+- Night embeds the Cloudflare Request/Response bridge directly; the template vendors only `night.py` into `src/`.
+- `workers-runtime-sdk` provides the official Python/JavaScript Workers RPC conversion layer. The demo exposes the same `@app.rpc("todo_count")` method over HTTP JSON-RPC and the `night_rpc()` WorkerEntrypoint method for Service Bindings.
 - Workers KV is eventually consistent; this demo favors a simple edge-native persistence example over transactional semantics.
-- Streaming/SSE and WebSockets are not part of this first portable Web adapter demo.
+- The embedded bridge currently buffers streaming response chunks before constructing the Workers `Response`; native streaming remains a future optimization.

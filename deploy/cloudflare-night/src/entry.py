@@ -2,8 +2,7 @@ import json
 import uuid
 
 from night import HTMLResponse, Night
-from web_runtime import CloudflareWorkerMixin
-from workers import Response, WorkerEntrypoint
+from workers import WorkerEntrypoint
 
 
 app = Night()
@@ -103,11 +102,20 @@ async def delete_todo(id: str):
     return todo
 
 
-class Default(CloudflareWorkerMixin, WorkerEntrypoint):
-    app = app
-    web_response_class = Response
+@app.rpc("todo_count")
+async def todo_count():
+    result = await _kv.list(prefix="todo:")
+    keys = result.get("keys", [])
+    return len(keys)
 
+
+class Default(WorkerEntrypoint):
     async def fetch(self, request):
         global _kv
         _kv = self.env.TODOS
-        return await CloudflareWorkerMixin.fetch(self, request)
+        return await app.cloudflare_fetch(request)
+
+    async def night_rpc(self, method, args=None, kwargs=None):
+        global _kv
+        _kv = self.env.TODOS
+        return await app.cloudflare_rpc(method, args, kwargs)
