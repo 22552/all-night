@@ -25,6 +25,9 @@ jobs:
       - name: Run integrated Night fast-path benchmark
         if: matrix.python-version == '3.13'
         run: python benchmarks/fast_path.py
+      - name: Diagnose Night client overhead
+        if: matrix.python-version == '3.13'
+        run: python benchmarks/diagnose_client.py
       - name: Run Web runtime demo
         run: python -m examples.web_runtime_demo
       - name: Build Cloudflare Night template
