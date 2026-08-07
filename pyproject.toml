@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "22552"}]
-keywords = ["asgi", "web", "framework", "night"]
+keywords = ["asgi", "web", "framework", "night", "mcp", "serverless"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: AsyncIO",
@@ -28,5 +28,4 @@ Repository = "https://github.com/22552/all-night"
 night = "night:cli"
 
 [tool.setuptools]
-py-modules = ["night"]
-
+py-modules = ["night", "night_mcp"]
