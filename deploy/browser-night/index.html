@@ -7,7 +7,7 @@ body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0
 </style>
 <h1>Night in the Browser</h1>
 <p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
-<p id="status">Loading Pyodide…</p>
+<p id="status">Loading Pyodide module…</p>
 <div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong></div>
 <div class="row">
   <select id="method"><option>GET</option><option>POST</option></select>
@@ -17,8 +17,8 @@ body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0
 <button id="run" disabled>Run Night request</button>
 <pre id="output"></pre>
 <script type="module">
-import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.mjs";
-
+const PYODIDE_BASE = 'https://cdn.jsdelivr.net/pyodide/v0.28.2/full/';
+const APP_BASE = new URL('./', location.href);
 const status = document.querySelector('#status');
 const run = document.querySelector('#run');
 const output = document.querySelector('#output');
@@ -27,10 +27,11 @@ const pathEl = document.querySelector('#path');
 const bodyEl = document.querySelector('#body');
 const stunIpEl = document.querySelector('#stun-ip');
 let stunPublicIp = null;
+let pyodide;
 
 async function text(url){
-  const r = await fetch(url);
-  if(!r.ok) throw new Error(`${url}: ${r.status}`);
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok) throw new Error(`Fetch failed: ${url} (${r.status})`);
   return await r.text();
 }
 
@@ -43,81 +44,71 @@ function isPublicAddress(address){
   const parts = address.split('.').map(Number);
   if(parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return false;
   const [a,b] = parts;
-  return !(
-    a === 10 || a === 127 || a === 0 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127)
-  );
+  return !(a===10||a===127||a===0||(a===169&&b===254)||(a===172&&b>=16&&b<=31)||(a===192&&b===168)||(a===100&&b>=64&&b<=127));
 }
 
 async function detectPublicIp(){
   if(!('RTCPeerConnection' in globalThis)) return null;
-  const pc = new RTCPeerConnection({
-    iceServers: [{urls: 'stun:stun.cloudflare.com:3478'}],
-  });
+  const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
   try{
     pc.createDataChannel('night-stun');
     const result = new Promise(resolve => {
-      let settled = false;
-      const finish = value => {
-        if(settled) return;
-        settled = true;
-        resolve(value);
-      };
-      const timer = setTimeout(() => finish(null), 5000);
-      pc.addEventListener('icecandidate', event => {
-        const candidate = event.candidate;
-        if(!candidate){
-          clearTimeout(timer);
-          finish(null);
-          return;
-        }
-        if(candidate.type !== 'srflx') return;
-        const address = candidate.address || candidate.candidate?.split(' ')[4] || null;
-        if(isPublicAddress(address)){
-          clearTimeout(timer);
-          finish(address);
-        }
+      let settled=false;
+      const finish=value=>{if(settled)return;settled=true;resolve(value)};
+      const timer=setTimeout(()=>finish(null),5000);
+      pc.addEventListener('icecandidate', event=>{
+        const candidate=event.candidate;
+        if(!candidate){clearTimeout(timer);finish(null);return}
+        if(candidate.type!=='srflx') return;
+        const address=candidate.address||candidate.candidate?.split(' ')[4]||null;
+        if(isPublicAddress(address)){clearTimeout(timer);finish(address)}
       });
     });
     await pc.setLocalDescription(await pc.createOffer());
     return await result;
-  }catch{
-    return null;
-  }finally{
-    pc.close();
-  }
+  }catch{return null}finally{pc.close()}
 }
 
-const stunPromise = detectPublicIp().then(ip => {
-  stunPublicIp = ip;
-  stunIpEl.textContent = ip || 'unavailable';
+const stunPromise = detectPublicIp().then(ip=>{
+  stunPublicIp=ip;
+  stunIpEl.textContent=ip||'unavailable';
   return ip;
 });
 
-const pyodide = await loadPyodide();
-pyodide.FS.mkdirTree('/night');
-const [night, web, app] = await Promise.all([
-  text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
-  text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
-  text('./app.py'),
-]);
-pyodide.FS.writeFile('/night/night.py', night);
-pyodide.FS.writeFile('/night/night_web.py', web);
-pyodide.FS.writeFile('/night/app.py', app);
-await pyodide.runPythonAsync(`
+try {
+  status.textContent = 'Loading Pyodide module…';
+  const { loadPyodide } = await import(PYODIDE_BASE + 'pyodide.mjs');
+  status.textContent = 'Loading Python runtime…';
+  pyodide = await loadPyodide({indexURL: PYODIDE_BASE});
+
+  status.textContent = 'Loading Night sources…';
+  pyodide.FS.mkdirTree('/night');
+  const [night, web, app] = await Promise.all([
+    text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
+    text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
+    text(new URL('app.py', APP_BASE)),
+  ]);
+  pyodide.FS.writeFile('/night/night.py', night);
+  pyodide.FS.writeFile('/night/night_web.py', web);
+  pyodide.FS.writeFile('/night/app.py', app);
+
+  status.textContent = 'Starting Night…';
+  await pyodide.runPythonAsync(`
 import sys
 sys.path.insert(0, '/night')
 from app import app
 from night_web import handle_web
 `);
-await stunPromise;
-status.textContent = 'Ready — Night is running locally in your browser.';
-run.disabled = false;
+  await stunPromise;
+  status.textContent = 'Ready — Night is running locally in your browser.';
+  run.disabled = false;
+} catch (e) {
+  status.textContent = 'Browser Night failed to start';
+  output.textContent = String(e?.stack || e);
+}
 
 run.onclick = async () => {
+  if(!pyodide) return;
   run.disabled = true;
   output.textContent = 'Running…';
   try {
