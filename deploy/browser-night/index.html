@@ -123,15 +123,44 @@ try {
   pyodide.FS.writeFile('/night/night_request_info.py', requestInfo);
   pyodide.FS.writeFile('/night/app.py', app);
 
-  nightStatusEl.textContent = 'importing…';
-  status.textContent = 'Starting Night…';
-  await pyodide.runPythonAsync(`
-import sys
+  nightStatusEl.textContent = 'importing night.py…';
+  status.textContent = 'Importing night.py…';
+  let importReport = await pyodide.runPythonAsync(`
+import sys, traceback
 sys.path.insert(0, '/night')
-from app import app
-from night_web import handle_web
-from night_request_info import from_scope
+try:
+    import night
+    'ok'
+except Exception:
+    traceback.format_exc()
 `);
+  if(importReport !== 'ok') throw new Error(`night.py import failed:\n${importReport}`);
+
+  nightStatusEl.textContent = 'importing app.py…';
+  status.textContent = 'Importing app.py…';
+  importReport = await pyodide.runPythonAsync(`
+import traceback
+try:
+    from app import app
+    'ok'
+except Exception:
+    traceback.format_exc()
+`);
+  if(importReport !== 'ok') throw new Error(`app.py import failed:\n${importReport}`);
+
+  nightStatusEl.textContent = 'importing adapter…';
+  status.textContent = 'Importing Night web adapter…';
+  importReport = await pyodide.runPythonAsync(`
+import traceback
+try:
+    from night_web import handle_web
+    from night_request_info import from_scope
+    'ok'
+except Exception:
+    traceback.format_exc()
+`);
+  if(importReport !== 'ok') throw new Error(`Night adapter import failed:\n${importReport}`);
+
   nightStatusEl.textContent = 'ready ✓';
   await stunPromise;
   status.textContent = 'Ready — Night is running locally in your browser.';
