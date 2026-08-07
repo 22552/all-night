@@ -2,6 +2,7 @@ import json
 import uuid
 
 from night import HTMLResponse, Night
+from night_cloudflare import cloudflare
 from workers import WorkerEntrypoint
 
 
@@ -46,6 +47,22 @@ async def _get_todo(todo_id: str):
 @app.get("/")
 def index():
     return HTMLResponse(PAGE)
+
+
+@app.get("/api/info")
+def info(req):
+    return {
+        "platform": req.platform,
+        "ip": req.client_ip,
+        "country": req.country,
+        "city": req.info.city,
+        "region": req.info.region,
+        "timezone": req.info.timezone,
+        "colo": req.info.colo,
+        "asn": req.info.asn,
+        "http_protocol": req.info.http_protocol,
+        "tls_version": req.info.tls_version,
+    }
 
 
 @app.get("/api/todos")
@@ -113,7 +130,7 @@ class Default(WorkerEntrypoint):
     async def fetch(self, request):
         global _kv
         _kv = self.env.TODOS
-        return await app.cloudflare_fetch(request)
+        return await cloudflare(app, request)
 
     async def night_rpc(self, method, args=None, kwargs=None):
         global _kv
