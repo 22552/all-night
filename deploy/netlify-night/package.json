@@ -1,0 +1,11 @@
+{
+  "name": "night-netlify-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "node scripts/prepare.mjs"
+  },
+  "dependencies": {
+    "pyodide": "314.0.3"
+  }
+}
