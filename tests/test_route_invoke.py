@@ -70,3 +70,24 @@ def test_hooks_still_run_with_invoke_fast_path():
     finally:
         client.close()
     assert seen == [('before', '/'), ('after', '/')]
+
+
+def test_middleware_chain_uses_cached_dispatch_path_and_method():
+    app = Night()
+    seen = []
+
+    @app.middleware
+    async def middleware(req, next):
+        seen.append((req.method, req.path))
+        return await next()
+
+    @app.get('/cached/<int:id>')
+    def cached(id: int):
+        return {'id': id}
+
+    client = app.test_client()
+    try:
+        assert json.loads(client.get('/cached/3').text) == {'id': 3}
+    finally:
+        client.close()
+    assert seen == [('GET', '/cached/3')]
