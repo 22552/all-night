@@ -19,11 +19,23 @@ class RequestInfo:
     country: str | None = None
     city: str | None = None
     region: str | None = None
+    region_code: str | None = None
+    postal_code: str | None = None
+    continent: str | None = None
     timezone: str | None = None
     latitude: str | None = None
     longitude: str | None = None
     accept_language: str | None = None
     referrer: str | None = None
+    colo: str | None = None
+    asn: str | None = None
+    as_organization: str | None = None
+    http_protocol: str | None = None
+    tls_version: str | None = None
+    tls_cipher: str | None = None
+    client_tcp_rtt: str | None = None
+    client_quic_rtt: str | None = None
+    delivery_rate: str | None = None
 
 
 def from_scope(scope: dict[str, t.Any]) -> RequestInfo:
@@ -57,11 +69,23 @@ def from_scope(scope: dict[str, t.Any]) -> RequestInfo:
         country=_text(raw.get("country")),
         city=_text(raw.get("city")),
         region=_text(raw.get("region")),
+        region_code=_text(raw.get("region_code")),
+        postal_code=_text(raw.get("postal_code")),
+        continent=_text(raw.get("continent")),
         timezone=_text(raw.get("timezone")),
         latitude=_text(raw.get("latitude")),
         longitude=_text(raw.get("longitude")),
         accept_language=_text(raw.get("accept_language") or headers.get("accept-language")),
         referrer=_text(raw.get("referrer") or headers.get("referer")),
+        colo=_text(raw.get("colo")),
+        asn=_text(raw.get("asn")),
+        as_organization=_text(raw.get("as_organization")),
+        http_protocol=_text(raw.get("http_protocol")),
+        tls_version=_text(raw.get("tls_version")),
+        tls_cipher=_text(raw.get("tls_cipher")),
+        client_tcp_rtt=_text(raw.get("client_tcp_rtt")),
+        client_quic_rtt=_text(raw.get("client_quic_rtt")),
+        delivery_rate=_text(raw.get("delivery_rate")),
     )
 
 
