@@ -595,6 +595,31 @@ class Request:
             return None
 
     @property
+    def info(self):
+        from night_request_info import from_scope
+        return from_scope(self.scope)
+
+    @property
+    def client_ip(self) -> str | None:
+        return self.info.client_ip
+
+    @property
+    def user_agent(self) -> str | None:
+        return self.info.user_agent
+
+    @property
+    def country(self) -> str | None:
+        return self.info.country
+
+    @property
+    def request_id(self) -> str | None:
+        return self.info.request_id
+
+    @property
+    def platform(self) -> str | None:
+        return self.info.platform
+
+    @property
     def scheme(self) -> str:
         return self.scope.get("scheme") or "http"
 
@@ -2147,7 +2172,7 @@ class Night(Router):
             if terminal:
                 base, sep, value = key.rpartition("/")
                 if sep and value:
-                    route = terminal.get(base or "/")
+                    route = terminal.get(base or '/')
                     if route is not None:
                         _prefix, _suffix, name, converter = route._night_simple_dynamic
                         if converter == "int":
@@ -2740,4 +2765,3 @@ def cli(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(cli(sys.argv[1:]))
-
