@@ -1496,6 +1496,52 @@ class Night(Router):
             return
         route._night_call_kind = ROUTE_CALL_GENERIC
 
+    def _compile_route_invoker(self, route: Route, plan: _EndpointPlan):
+        fn = route.endpoint
+        coerce = self._coerce_response
+        kind = route._night_call_kind
+
+        if kind == ROUTE_CALL_DIRECT_PARAM:
+            name = route._night_direct_param
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _name=name, _coerce=coerce):
+                    return _coerce(await _fn(params[_name]))
+            else:
+                async def invoke(req, params, _fn=fn, _name=name, _coerce=coerce):
+                    return _coerce(_fn(params[_name]))
+            return invoke
+
+        if kind == ROUTE_CALL_NOARGS:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn())
+            else:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn())
+            return invoke
+
+        if kind == ROUTE_CALL_REQUEST_KEYWORD:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn(req=req))
+            else:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn(req=req))
+            return invoke
+
+        if kind == ROUTE_CALL_REQUEST_POSITIONAL:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn(req))
+            else:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn(req))
+            return invoke
+
+        async def invoke(req, params, _route=route):
+            return await self._call_route_generic(_route, req, params)
+        return invoke
+
     def _on_route_added(self, route: Route):
         key = route.raw_path.rstrip("/") or "/"
         plan = _compile_endpoint(route.endpoint)
@@ -1546,9 +1592,11 @@ class Night(Router):
                         self._dynamic_terminal_index.setdefault(method, {})[base] = route
                 self._rebuild_dynamic_matcher(method)
             self._classify_route_call(route, plan)
+            route._night_invoke = self._compile_route_invoker(route, plan)
             return
 
         self._classify_route_call(route, plan)
+        route._night_invoke = self._compile_route_invoker(route, plan)
         self._static_route_index.setdefault(key, []).append(route)
         methods = self._static_methods_by_path.setdefault(key, set())
         for method in route.methods:
@@ -2094,43 +2142,39 @@ class Night(Router):
             return Response(value)
         return PlainTextResponse(str(value))
 
-    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+    async def _call_route_generic(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
         plan = route._night_plan
         fn = route.endpoint
-        kind = route._night_call_kind
+        kwargs = params
 
-        if kind == ROUTE_CALL_DIRECT_PARAM:
-            result = fn(params[route._night_direct_param])
-        elif kind == ROUTE_CALL_NOARGS:
-            result = fn()
-        elif kind == ROUTE_CALL_REQUEST_KEYWORD:
-            result = fn(req=req)
-        elif kind == ROUTE_CALL_REQUEST_POSITIONAL:
-            result = fn(req)
-        else:
-            kwargs = params
-
-            if plan.body_model is not None:
-                payload = await req.json()
-                validated = _validate_dataclass(plan.body_model, payload)
-                target = next((name for name in plan.body_candidates if name not in kwargs), None)
-                if target is not None:
-                    kwargs[target] = validated
-                else:
-                    kwargs.setdefault("data", validated)
-
-            if plan.call_mode == CALL_REQUEST_KEYWORD:
-                result = fn(req=req, **kwargs)
-            elif plan.call_mode == CALL_REQUEST_POSITIONAL:
-                result = fn(req, **kwargs)
-            elif kwargs:
-                result = fn(**kwargs)
+        if plan.body_model is not None:
+            payload = await req.json()
+            validated = _validate_dataclass(plan.body_model, payload)
+            target = next((name for name in plan.body_candidates if name not in kwargs), None)
+            if target is not None:
+                kwargs[target] = validated
             else:
-                result = fn()
+                kwargs.setdefault("data", validated)
+
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+            result = fn(req=req, **kwargs)
+        elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+            result = fn(req, **kwargs)
+        elif kwargs:
+            result = fn(**kwargs)
+        else:
+            result = fn()
 
         if plan.is_coro:
             result = await t.cast(t.Awaitable, result)
         return self._coerce_response(result)
+
+    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        invoke = getattr(route, "_night_invoke", None)
+        if invoke is None:
+            # Compatibility path for synthetic routes used by _call_endpoint().
+            return await self._call_route_generic(route, req, params)
+        return await invoke(req, params)
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, t.Any]) -> Response:
         plan = self._endpoint_plans.get(fn)
         if plan is None:
@@ -2176,14 +2220,16 @@ class Night(Router):
         return None
 
     async def _dispatch(self, req: Request) -> Response:
-        early = await self._run_before_hooks(req)
-        if early is not None:
-            return early
+        if self.before_hooks:
+            early = await self._run_before_hooks(req)
+            if early is not None:
+                return early
 
         route, params = self._match_method(req.path, req.method)
         req.path_params = params
-        resp = await self._call_route(route, req, params)
-        resp = await self._run_after_hooks(req, resp)
+        resp = await route._night_invoke(req, params)
+        if self.after_hooks:
+            resp = await self._run_after_hooks(req, resp)
         return resp
 
     def _allowed_methods_for_path(self, path: str) -> set[str]:
