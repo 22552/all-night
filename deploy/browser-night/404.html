@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Night Browser Router</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}
+</style>
+<h1>Night Browser Router</h1>
+<p class="muted">GitHub Pages 404 → Pyodide → Night</p>
+<p id="status">Loading Night…</p>
+<pre id="output"></pre>
+<script type="module">
+import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.mjs";
+
+const status = document.querySelector('#status');
+const output = document.querySelector('#output');
+
+async function text(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(`${url}: ${r.status}`);
+  return await r.text();
+}
+
+async function discoverPublicIp(){
+  if(!globalThis.RTCPeerConnection) return null;
+  const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  try {
+    return await new Promise(async resolve => {
+      let settled = false;
+      const finish = value => { if(!settled){ settled = true; resolve(value); } };
+      pc.onicecandidate = event => {
+        const c = event.candidate?.candidate || '';
+        if(!c){ finish(null); return; }
+        const parts = c.split(' ');
+        const typ = parts[7];
+        const address = parts[4];
+        if(typ === 'srflx' && address) finish(address);
+      };
+      await pc.setLocalDescription(await pc.createOffer({offerToReceiveAudio:false,offerToReceiveVideo:false}));
+      setTimeout(() => finish(null), 2500);
+    });
+  } finally {
+    pc.close();
+  }
+}
+
+try {
+  const pyodide = await loadPyodide();
+  pyodide.FS.mkdirTree('/night');
+  const base = new URL('./', import.meta.url);
+  const [night, web, app] = await Promise.all([
+    text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
+    text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
+    text(new URL('app.py', base)),
+  ]);
+  pyodide.FS.writeFile('/night/night.py', night);
+  pyodide.FS.writeFile('/night/night_web.py', web);
+  pyodide.FS.writeFile('/night/app.py', app);
+  await pyodide.runPythonAsync(`
+import sys
+sys.path.insert(0, '/night')
+from app import app
+from night_web import handle_web
+`);
+
+  const publicIp = await discoverPublicIp();
+  const projectBase = '/all-night';
+  let path = location.pathname;
+  if(path === projectBase) path = '/';
+  else if(path.startsWith(projectBase + '/')) path = path.slice(projectBase.length) || '/';
+  path += location.search;
+
+  pyodide.globals.set('_url', new URL(path, location.origin).href);
+  pyodide.globals.set('_client_ip', publicIp);
+  const result = await pyodide.runPythonAsync(`
+_info = {'platform': 'browser'}
+if _client_ip:
+    _info['client_ip'] = _client_ip
+_result = await handle_web(
+    app,
+    method='GET',
+    url=_url,
+    headers=[],
+    body=b'',
+    platform_info=_info,
+)
+_result.as_tuple()
+`);
+  const js = result.toJs({create_proxies:false});
+  result.destroy?.();
+  const statusCode = Number(js[0]);
+  const headers = js[1];
+  const raw = js[2] instanceof Uint8Array ? js[2] : new Uint8Array(js[2]);
+  const body = new TextDecoder().decode(raw);
+  status.textContent = `Night handled ${path} (${statusCode})`;
+
+  const contentType = headers.find(([k]) => String(k).toLowerCase() === 'content-type')?.[1] || '';
+  if(contentType.includes('text/html') && statusCode >= 200 && statusCode < 400){
+    document.open(); document.write(body); document.close();
+  } else {
+    output.textContent = `HTTP ${statusCode}\n${headers.map(([k,v])=>`${k}: ${v}`).join('\n')}\n\n${body}`;
+  }
+} catch (e) {
+  status.textContent = 'Night router failed';
+  output.textContent = String(e?.stack || e);
+}
+</script>
