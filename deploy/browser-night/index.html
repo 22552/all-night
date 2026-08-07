@@ -50,6 +50,14 @@ function reportError(error){
   errorSummaryEl.classList.add('error');
 }
 
+function pyString(value){
+  try {
+    return typeof value === 'string' ? value : String(value);
+  } finally {
+    value?.destroy?.();
+  }
+}
+
 async function loadCompatiblePyodide(){
   const errors = [];
   const attempts = [];
@@ -135,7 +143,7 @@ try {
 
   nightStatusEl.textContent = 'importing night.py…';
   status.textContent = 'Importing night.py…';
-  let importReport = await pyodide.runPythonAsync(`
+  let importReport = pyString(await pyodide.runPythonAsync(`
 import sys, traceback
 sys.path.insert(0, '/night')
 try:
@@ -143,24 +151,24 @@ try:
     'ok'
 except BaseException:
     traceback.format_exc()
-`);
+`));
   if(importReport !== 'ok') throw new Error(`night.py import failed:\n${importReport}`);
 
   nightStatusEl.textContent = 'importing app.py…';
   status.textContent = 'Importing app.py…';
-  importReport = await pyodide.runPythonAsync(`
+  importReport = pyString(await pyodide.runPythonAsync(`
 import traceback
 try:
     from app import app
     'ok'
 except BaseException:
     traceback.format_exc()
-`);
+`));
   if(importReport !== 'ok') throw new Error(`app.py import failed:\n${importReport}`);
 
   nightStatusEl.textContent = 'importing adapter…';
   status.textContent = 'Importing Night web adapter…';
-  importReport = await pyodide.runPythonAsync(`
+  importReport = pyString(await pyodide.runPythonAsync(`
 import traceback
 try:
     from night_web import handle_web
@@ -168,10 +176,12 @@ try:
     'ok'
 except BaseException:
     traceback.format_exc()
-`);
+`));
   if(importReport !== 'ok') throw new Error(`Night adapter import failed:\n${importReport}`);
 
   nightStatusEl.textContent = 'ready ✓';
+  errorSummaryEl.textContent = 'none';
+  errorSummaryEl.classList.remove('error');
   await stunPromise;
   status.textContent = 'Ready — Night is running locally in your browser.';
   run.disabled = false;
