@@ -27,7 +27,13 @@ jobs:
         run: python benchmarks/fast_path.py
       - name: Diagnose Night client overhead
         if: matrix.python-version == '3.13'
-        run: python benchmarks/diagnose_client.py
+        run: python benchmarks/diagnose_client.py | tee night-client-diagnostics.txt
+      - name: Upload Night client diagnostics
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: night-client-diagnostics-py313
+          path: night-client-diagnostics.txt
       - name: Run Web runtime demo
         run: python -m examples.web_runtime_demo
       - name: Build Cloudflare Night template
