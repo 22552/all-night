@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from night import Night, Request
 
@@ -30,10 +31,10 @@ def test_compiled_route_invokers_cover_hot_call_shapes():
     client = app.test_client()
     try:
         assert client.get('/static').text == 'ok'
-        assert client.get('/users/42').json() == {'id': 42}
+        assert json.loads(client.get('/users/42').text) == {'id': 42}
         assert client.get('/request').text == '/request'
         assert client.get('/keyword').text == '/keyword'
-        assert client.get('/async/7').json() == {'id': 7}
+        assert json.loads(client.get('/async/7').text) == {'id': 7}
 
         for route in app.routes:
             assert callable(route._night_invoke)
