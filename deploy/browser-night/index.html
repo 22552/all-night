@@ -50,6 +50,17 @@ function reportError(error){
   errorSummaryEl.classList.add('error');
 }
 
+function showPythonFailure(stage, report){
+  const full = `${stage} failed:\n${report}`;
+  console.error('[Browser Night]', full);
+  status.textContent = `${stage} failed`;
+  nightStatusEl.textContent = 'failed ✗';
+  errorSummaryEl.textContent = String(report).split('\n').find(line => line.trim()) || `${stage} failed`;
+  errorSummaryEl.classList.add('error');
+  output.textContent = full;
+  run.disabled = true;
+}
+
 function pyString(value){
   try {
     return typeof value === 'string' ? value : String(value);
@@ -152,11 +163,12 @@ try:
 except BaseException:
     traceback.format_exc()
 `));
-  if(importReport !== 'ok') throw new Error(`night.py import failed:\n${importReport}`);
-
-  nightStatusEl.textContent = 'importing app.py…';
-  status.textContent = 'Importing app.py…';
-  importReport = pyString(await pyodide.runPythonAsync(`
+  if(importReport !== 'ok') {
+    showPythonFailure('night.py import', importReport);
+  } else {
+    nightStatusEl.textContent = 'importing app.py…';
+    status.textContent = 'Importing app.py…';
+    importReport = pyString(await pyodide.runPythonAsync(`
 import traceback
 try:
     from app import app
@@ -164,11 +176,12 @@ try:
 except BaseException:
     traceback.format_exc()
 `));
-  if(importReport !== 'ok') throw new Error(`app.py import failed:\n${importReport}`);
-
-  nightStatusEl.textContent = 'importing adapter…';
-  status.textContent = 'Importing Night web adapter…';
-  importReport = pyString(await pyodide.runPythonAsync(`
+    if(importReport !== 'ok') {
+      showPythonFailure('app.py import', importReport);
+    } else {
+      nightStatusEl.textContent = 'importing adapter…';
+      status.textContent = 'Importing Night web adapter…';
+      importReport = pyString(await pyodide.runPythonAsync(`
 import traceback
 try:
     from night_web import handle_web
@@ -177,18 +190,22 @@ try:
 except BaseException:
     traceback.format_exc()
 `));
-  if(importReport !== 'ok') throw new Error(`Night adapter import failed:\n${importReport}`);
-
-  nightStatusEl.textContent = 'ready ✓';
-  errorSummaryEl.textContent = 'none';
-  errorSummaryEl.classList.remove('error');
-  await stunPromise;
-  status.textContent = 'Ready — Night is running locally in your browser.';
-  run.disabled = false;
+      if(importReport !== 'ok') {
+        showPythonFailure('Night adapter import', importReport);
+      } else {
+        nightStatusEl.textContent = 'ready ✓';
+        errorSummaryEl.textContent = 'none';
+        errorSummaryEl.classList.remove('error');
+        await stunPromise;
+        status.textContent = 'Ready — Night is running locally in your browser.';
+        run.disabled = false;
+      }
+    }
+  }
 } catch (e) {
   status.textContent = runtimeReady ? 'Night failed to start' : 'Pyodide failed to start';
   if(!runtimeReady) pyodideVersionEl.textContent = 'failed';
-  if(runtimeReady) nightStatusEl.textContent = 'failed ✗';
+  if(runtimeReady && nightStatusEl.textContent !== 'failed ✗') nightStatusEl.textContent = 'failed ✗';
   reportError(e);
 }
 
