@@ -61,12 +61,23 @@ function showPythonFailure(stage, report){
   run.disabled = true;
 }
 
-function pyString(value){
-  try {
-    return typeof value === 'string' ? value : String(value);
-  } finally {
-    value?.destroy?.();
-  }
+function jsString(value){
+  if(value == null) return '';
+  try { return typeof value === 'string' ? value : value.toString(); }
+  finally { value?.destroy?.(); }
+}
+
+async function pythonImportReport(code){
+  pyodide.globals.delete('_night_import_report');
+  await pyodide.runPythonAsync(`
+import traceback
+_night_import_report = 'ok'
+try:
+${code.split('\n').map(line => '    ' + line).join('\n')}
+except BaseException:
+    _night_import_report = traceback.format_exc()
+`);
+  return jsString(pyodide.globals.get('_night_import_report'));
 }
 
 async function loadCompatiblePyodide(){
@@ -152,46 +163,25 @@ try {
   pyodide.FS.writeFile('/night/night_request_info.py', requestInfo);
   pyodide.FS.writeFile('/night/app.py', app);
 
+  await pyodide.runPythonAsync(`import sys\nsys.path.insert(0, '/night')`);
+
   nightStatusEl.textContent = 'importing night.py…';
   status.textContent = 'Importing night.py…';
-  let importReport = pyString(await pyodide.runPythonAsync(`
-import sys, traceback
-sys.path.insert(0, '/night')
-try:
-    import night
-    'ok'
-except BaseException:
-    traceback.format_exc()
-`));
+  let importReport = await pythonImportReport('import night');
   if(importReport !== 'ok') {
-    showPythonFailure('night.py import', importReport);
+    showPythonFailure('night.py import', importReport || '(empty diagnostic)');
   } else {
     nightStatusEl.textContent = 'importing app.py…';
     status.textContent = 'Importing app.py…';
-    importReport = pyString(await pyodide.runPythonAsync(`
-import traceback
-try:
-    from app import app
-    'ok'
-except BaseException:
-    traceback.format_exc()
-`));
+    importReport = await pythonImportReport('from app import app');
     if(importReport !== 'ok') {
-      showPythonFailure('app.py import', importReport);
+      showPythonFailure('app.py import', importReport || '(empty diagnostic)');
     } else {
       nightStatusEl.textContent = 'importing adapter…';
       status.textContent = 'Importing Night web adapter…';
-      importReport = pyString(await pyodide.runPythonAsync(`
-import traceback
-try:
-    from night_web import handle_web
-    from night_request_info import from_scope
-    'ok'
-except BaseException:
-    traceback.format_exc()
-`));
+      importReport = await pythonImportReport('from night_web import handle_web\nfrom night_request_info import from_scope');
       if(importReport !== 'ok') {
-        showPythonFailure('Night adapter import', importReport);
+        showPythonFailure('Night adapter import', importReport || '(empty diagnostic)');
       } else {
         nightStatusEl.textContent = 'ready ✓';
         errorSummaryEl.textContent = 'none';
