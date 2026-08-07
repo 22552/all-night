@@ -3,139 +3,71 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Night Browser Router</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}.meta{background:#181818;padding:10px 14px;border-radius:8px;margin:12px 0 20px}
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}.meta{background:#181818;padding:10px 14px;border-radius:8px;margin:12px 0 20px}.error{color:#ffb4b4}
 </style>
 <h1>Night Browser Router</h1>
 <p class="muted">GitHub Pages 404 → Pyodide → Night</p>
 <p id="status">Loading Pyodide…</p>
-<div class="meta">Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong><br>Night: <strong id="night-status">waiting…</strong></div>
+<div class="meta">Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong><br>Night: <strong id="night-status">waiting…</strong><br>Error: <strong id="error-summary">none</strong></div>
 <pre id="output"></pre>
 <script type="module">
-const PROJECT_BASE = '/all-night';
-const ASSET_BASE = new URL(PROJECT_BASE + '/', location.origin);
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const PYODIDE_VERSIONS = isIOS ? ['0.27.3', '0.28.3'] : ['0.28.3', '0.27.3'];
-const status = document.querySelector('#status');
-const output = document.querySelector('#output');
-const pyodideVersionEl = document.querySelector('#pyodide-version');
-const pyodideAttemptsEl = document.querySelector('#pyodide-attempts');
-const nightStatusEl = document.querySelector('#night-status');
-let runtimeReady = false;
+const PROJECT_BASE='/all-night';
+const ASSET_BASE=new URL(PROJECT_BASE+'/',location.origin);
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const PYODIDE_VERSIONS=isIOS?['0.27.3','0.28.3']:['0.28.3','0.27.3'];
+const status=document.querySelector('#status');
+const output=document.querySelector('#output');
+const pyodideVersionEl=document.querySelector('#pyodide-version');
+const pyodideAttemptsEl=document.querySelector('#pyodide-attempts');
+const nightStatusEl=document.querySelector('#night-status');
+const errorSummaryEl=document.querySelector('#error-summary');
+let runtimeReady=false;
 
-async function text(url){
-  const r = await fetch(url, {cache:'no-store'});
-  if(!r.ok) throw new Error(`Fetch failed: ${url} (${r.status})`);
-  return await r.text();
-}
-
-async function loadCompatiblePyodide(){
-  const errors=[];
-  const attempts=[];
-  for(const version of PYODIDE_VERSIONS){
-    const base=`https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
-    attempts.push(`${version}…`);
-    pyodideAttemptsEl.textContent=attempts.join(' → ');
-    try{
-      status.textContent=`Loading Pyodide ${version} module…`;
-      const {loadPyodide}=await import(base+'pyodide.mjs');
-      status.textContent=`Starting Python runtime (Pyodide ${version})…`;
-      const runtime=await loadPyodide({indexURL:base});
-      attempts[attempts.length-1]=`${version} ✓`;
-      pyodideAttemptsEl.textContent=attempts.join(' → ');
-      pyodideVersionEl.textContent=version;
-      runtimeReady=true;
-      return runtime;
-    }catch(error){
-      attempts[attempts.length-1]=`${version} ✗`;
-      pyodideAttemptsEl.textContent=attempts.join(' → ');
-      errors.push(`Pyodide ${version}: ${String(error?.message||error)}`);
-      console.warn(`Pyodide ${version} failed`,error);
-    }
-  }
-  throw new Error(`No Pyodide runtime could start.\n${errors.join('\n')}`);
-}
-
-async function discoverPublicIp(){
-  if(!globalThis.RTCPeerConnection) return null;
-  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
-  try{
-    pc.createDataChannel('night-stun');
-    return await new Promise(async resolve=>{
-      let settled=false;
-      const finish=value=>{if(!settled){settled=true;resolve(value)}};
-      const timer=setTimeout(()=>finish(null),5000);
-      pc.onicecandidate=event=>{
-        const candidate=event.candidate;
-        if(!candidate){clearTimeout(timer);finish(null);return}
-        if(candidate.type!=='srflx') return;
-        const address=candidate.address||candidate.candidate?.split(' ')[4]||null;
-        if(address){clearTimeout(timer);finish(address)}
-      };
-      await pc.setLocalDescription(await pc.createOffer());
-    });
-  }catch{return null}finally{pc.close()}
-}
+async function text(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`Fetch failed: ${url} (${r.status})`);return await r.text()}
+function showFailure(stage,report){status.textContent=`${stage} failed`;nightStatusEl.textContent='failed ✗';errorSummaryEl.textContent=String(report).split('\n').find(x=>x.trim())||stage;errorSummaryEl.classList.add('error');output.textContent=`${stage} failed:\n${report}`}
+function jsString(value){if(value==null)return'';return typeof value==='string'?value:String(value)}
+async function pythonImportReport(pyodide,code){try{pyodide.globals.delete('_night_import_report')}catch{};await pyodide.runPythonAsync(`
+import traceback
+_night_import_report='ok'
+try:
+${code.split('\n').map(line=>'    '+line).join('\n')}
+except BaseException:
+    _night_import_report=traceback.format_exc()
+`);return jsString(pyodide.globals.get('_night_import_report'))}
+async function loadCompatiblePyodide(){const errors=[],attempts=[];for(const version of PYODIDE_VERSIONS){const base=`https://cdn.jsdelivr.net/pyodide/v${version}/full/`;attempts.push(`${version}…`);pyodideAttemptsEl.textContent=attempts.join(' → ');try{status.textContent=`Loading Pyodide ${version} module…`;const{loadPyodide}=await import(base+'pyodide.mjs');status.textContent=`Starting Python runtime (Pyodide ${version})…`;const runtime=await loadPyodide({indexURL:base});attempts[attempts.length-1]=`${version} ✓`;pyodideAttemptsEl.textContent=attempts.join(' → ');pyodideVersionEl.textContent=version;runtimeReady=true;return runtime}catch(error){attempts[attempts.length-1]=`${version} ✗`;pyodideAttemptsEl.textContent=attempts.join(' → ');errors.push(`Pyodide ${version}: ${String(error?.message||error)}`)}}throw new Error(`No Pyodide runtime could start.\n${errors.join('\n')}`)}
+async function discoverPublicIp(){if(!globalThis.RTCPeerConnection)return null;const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});try{pc.createDataChannel('night-stun');return await new Promise(async resolve=>{let settled=false;const finish=v=>{if(!settled){settled=true;resolve(v)}};const timer=setTimeout(()=>finish(null),5000);pc.onicecandidate=e=>{const c=e.candidate;if(!c){clearTimeout(timer);finish(null);return}if(c.type!=='srflx')return;const address=c.address||c.candidate?.split(' ')[4]||null;if(address){clearTimeout(timer);finish(address)}};await pc.setLocalDescription(await pc.createOffer())})}catch{return null}finally{pc.close()}}
 
 try{
   const pyodide=await loadCompatiblePyodide();
-  nightStatusEl.textContent='loading sources…';
-  status.textContent='Loading Night sources…';
+  nightStatusEl.textContent='loading sqlite3…';status.textContent='Loading sqlite3 support…';
+  try{await pyodide.loadPackage('sqlite3')}catch(e){showFailure('sqlite3 package load',String(e?.stack||e));throw e}
+  nightStatusEl.textContent='loading sources…';status.textContent='Loading Night sources…';
   pyodide.FS.mkdirTree('/night');
-  const [night,web,requestInfo,app]=await Promise.all([
+  const[night,web,requestInfo,app]=await Promise.all([
     text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
     text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
     text('https://raw.githubusercontent.com/22552/all-night/main/night_request_info.py'),
     text(new URL('app.py',ASSET_BASE)),
   ]);
-  pyodide.FS.writeFile('/night/night.py',night);
-  pyodide.FS.writeFile('/night/night_web.py',web);
-  pyodide.FS.writeFile('/night/night_request_info.py',requestInfo);
-  pyodide.FS.writeFile('/night/app.py',app);
-  nightStatusEl.textContent='importing…';
-  status.textContent='Starting Night…';
-  await pyodide.runPythonAsync(`
-import sys
-sys.path.insert(0, '/night')
-from app import app
-from night_web import handle_web
-from night_request_info import from_scope
-`);
-  nightStatusEl.textContent='ready ✓';
+  pyodide.FS.writeFile('/night/night.py',night);pyodide.FS.writeFile('/night/night_web.py',web);pyodide.FS.writeFile('/night/night_request_info.py',requestInfo);pyodide.FS.writeFile('/night/app.py',app);
+  await pyodide.runPythonAsync(`import sys\nsys.path.insert(0,'/night')`);
+  nightStatusEl.textContent='importing night.py…';let report=await pythonImportReport(pyodide,'import night');if(report!=='ok'){showFailure('night.py import',report);throw new Error('night import')}
+  nightStatusEl.textContent='importing app.py…';report=await pythonImportReport(pyodide,'from app import app');if(report!=='ok'){showFailure('app.py import',report);throw new Error('app import')}
+  nightStatusEl.textContent='importing adapter…';report=await pythonImportReport(pyodide,'from night_web import handle_web\nfrom night_request_info import from_scope');if(report!=='ok'){showFailure('Night adapter import',report);throw new Error('adapter import')}
+  nightStatusEl.textContent='ready ✓';errorSummaryEl.textContent='none';errorSummaryEl.classList.remove('error');
   const publicIp=await discoverPublicIp();
-  let path=location.pathname;
-  if(path===PROJECT_BASE) path='/';
-  else if(path.startsWith(PROJECT_BASE+'/')) path=path.slice(PROJECT_BASE.length)||'/';
-  path+=location.search;
-  pyodide.globals.set('_url',new URL(path,location.origin).href);
-  pyodide.globals.set('_client_ip',publicIp);
+  let path=location.pathname;if(path===PROJECT_BASE)path='/';else if(path.startsWith(PROJECT_BASE+'/'))path=path.slice(PROJECT_BASE.length)||'/';path+=location.search;
+  pyodide.globals.set('_url',new URL(path,location.origin).href);pyodide.globals.set('_client_ip',publicIp);
   const result=await pyodide.runPythonAsync(`
 _info={'platform':'browser'}
 if _client_ip:
     _info['client_ip']=str(_client_ip)
-_result=await handle_web(
-    app,
-    method='GET',
-    url=_url,
-    headers=[('user-agent','Browser Night / Pyodide')],
-    body=b'',
-    platform_info=_info,
-)
+_result=await handle_web(app,method='GET',url=_url,headers=[('user-agent','Browser Night / Pyodide')],body=b'',platform_info=_info)
 _result.as_tuple()
 `);
-  const js=result.toJs({create_proxies:false});
-  result.destroy?.();
-  const statusCode=Number(js[0]);
-  const headers=js[1];
-  const raw=js[2] instanceof Uint8Array?js[2]:new Uint8Array(js[2]);
-  const body=new TextDecoder().decode(raw);
+  const js=result.toJs({create_proxies:false});const statusCode=Number(js[0]);const headers=js[1];const raw=js[2] instanceof Uint8Array?js[2]:new Uint8Array(js[2]);const body=new TextDecoder().decode(raw);
   status.textContent=`Night handled ${path} (${statusCode})`;
   const contentType=headers.find(([k])=>String(k).toLowerCase()==='content-type')?.[1]||'';
-  if(contentType.includes('text/html')&&statusCode>=200&&statusCode<400){document.open();document.write(body);document.close()}
-  else{output.textContent=`HTTP ${statusCode}\n${headers.map(([k,v])=>`${k}: ${v}`).join('\n')}\n\n${body}`}
-}catch(e){
-  status.textContent=runtimeReady?'Night router failed':'Pyodide failed to start';
-  if(!runtimeReady) pyodideVersionEl.textContent='failed';
-  if(runtimeReady) nightStatusEl.textContent='failed ✗';
-  output.textContent=String(e?.stack||e);
-}
+  if(contentType.includes('text/html')&&statusCode>=200&&statusCode<400){document.open();document.write(body);document.close()}else{output.textContent=`HTTP ${statusCode}\n${headers.map(([k,v])=>`${k}: ${v}`).join('\n')}\n\n${body}`}
+}catch(e){if(!output.textContent){status.textContent=runtimeReady?'Night router failed':'Pyodide failed to start';if(!runtimeReady)pyodideVersionEl.textContent='failed';if(runtimeReady)nightStatusEl.textContent='failed ✗';output.textContent=String(e?.stack||e)}}
 </script>
