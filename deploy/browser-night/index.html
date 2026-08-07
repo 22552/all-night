@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Night in the Browser</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}input,select,textarea,button{font:inherit}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;margin:6px 0 12px;border:1px solid #444;border-radius:8px;background:#181818;color:#fff}textarea{min-height:100px}button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.row{display:grid;grid-template-columns:120px 1fr;gap:10px}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}
+</style>
+<h1>Night in the Browser</h1>
+<p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
+<p id="status">Loading Pyodide…</p>
+<div class="row">
+  <select id="method"><option>GET</option><option>POST</option></select>
+  <input id="path" value="/" placeholder="/hello/night">
+</div>
+<textarea id="body" placeholder="Request body for POST"></textarea>
+<button id="run" disabled>Run Night request</button>
+<pre id="output"></pre>
+<script type="module">
+import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.mjs";
+
+const status = document.querySelector('#status');
+const run = document.querySelector('#run');
+const output = document.querySelector('#output');
+const methodEl = document.querySelector('#method');
+const pathEl = document.querySelector('#path');
+const bodyEl = document.querySelector('#body');
+
+async function text(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(`${url}: ${r.status}`);
+  return await r.text();
+}
+
+const pyodide = await loadPyodide();
+pyodide.FS.mkdirTree('/night');
+const [night, web, app] = await Promise.all([
+  text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
+  text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
+  text('./app.py'),
+]);
+pyodide.FS.writeFile('/night/night.py', night);
+pyodide.FS.writeFile('/night/night_web.py', web);
+pyodide.FS.writeFile('/night/app.py', app);
+await pyodide.runPythonAsync(`
+import sys
+sys.path.insert(0, '/night')
+from app import app
+from night_web import handle_web
+`);
+status.textContent = 'Ready — Night is running locally in your browser.';
+run.disabled = false;
+
+run.onclick = async () => {
+  run.disabled = true;
+  output.textContent = 'Running…';
+  try {
+    const method = methodEl.value;
+    const path = pathEl.value.startsWith('/') ? pathEl.value : '/' + pathEl.value;
+    const body = new TextEncoder().encode(bodyEl.value);
+    pyodide.globals.set('_method', method);
+    pyodide.globals.set('_url', new URL(path, location.href).href);
+    pyodide.globals.set('_body', Array.from(body));
+    const result = await pyodide.runPythonAsync(`
+_result = await handle_web(
+    app,
+    method=_method,
+    url=_url,
+    headers=[('content-type', 'text/plain; charset=utf-8')],
+    body=bytes(_body.to_py()),
+    platform_info={'platform': 'browser'},
+)
+_result.as_tuple()
+`);
+    const js = result.toJs({create_proxies:false});
+    result.destroy?.();
+    const statusCode = Number(js[0]);
+    const headers = js[1];
+    const raw = js[2] instanceof Uint8Array ? js[2] : new Uint8Array(js[2]);
+    output.textContent = `HTTP ${statusCode}\n${headers.map(([k,v])=>`${k}: ${v}`).join('\n')}\n\n${new TextDecoder().decode(raw)}`;
+  } catch (e) {
+    output.textContent = String(e?.stack || e);
+  } finally {
+    run.disabled = false;
+  }
+};
+</script>
