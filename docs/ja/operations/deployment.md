@@ -42,22 +42,3 @@ session / flash / CSRFを使う場合は、強い `secret_key` を環境変数�
 署名付きsession dataはCookie側に保存されます。一方、application globalやmemory stateはprocess/isolate localです。複数instance間で整合性が必要なdataは外部storeへ置いてください。
 
 Cloudflare Workersではrequestごとのuser stateをmodule globalに保存しないでください。warm isolateは複数requestを処理できます。
-
-## PyPIリリース
-
-現在の公開版は **all-night 0.1.1** です。
-
-通常のrelease手順:
-
-1. `pyproject.toml` のversionを上げる
-2. full test matrixを通す
-3. PyPIに同じversionが存在しないことを確認する
-4. `v*` tagをpushして `Publish to PyPI` workflowを起動する
-5. wheel / sdistのupload成功を確認する
-
-```bash
-git tag v0.1.2
-git push origin v0.1.2
-```
-
-PyPI tokenをrepositoryへcommitしないでください。
