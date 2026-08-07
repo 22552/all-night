@@ -1,0 +1,50 @@
+name: Apply TestClient Runner optimization
+
+on:
+  push:
+    branches: [perf/test-client-runner]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/test-client-runner
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply patch
+        run: python tools/apply_test_client_runner.py
+      - name: Smoke test
+        run: |
+          python -m py_compile night.py
+          python - <<'PY'
+          import asyncio
+          from night import Night
+          app = Night()
+          seen=[]
+          @app.get('/loop')
+          def loop_id():
+              ident=id(asyncio.get_running_loop()); seen.append(ident); return {'loop': ident}
+          client=app.test_client()
+          assert client.get('/loop').status_code == 200
+          assert client.get('/loop').status_code == 200
+          assert seen[0] == seen[1]
+          client.close()
+          assert client.get('/loop').status_code == 200
+          client.close()
+          PY
+      - name: Remove one-shot files
+        run: rm tools/apply_test_client_runner.py .github/workflows/apply-test-client-runner.yml
+      - name: Commit optimization
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py tools/apply_test_client_runner.py .github/workflows/apply-test-client-runner.yml
+          git commit -m 'perf: reuse TestClient asyncio runner'
+          git push origin HEAD:perf/test-client-runner
