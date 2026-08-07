@@ -63,12 +63,11 @@ function showPythonFailure(stage, report){
 
 function jsString(value){
   if(value == null) return '';
-  try { return typeof value === 'string' ? value : value.toString(); }
-  finally { value?.destroy?.(); }
+  return typeof value === 'string' ? value : String(value);
 }
 
 async function pythonImportReport(code){
-  pyodide.globals.delete('_night_import_report');
+  try { pyodide.globals.delete('_night_import_report'); } catch {}
   await pyodide.runPythonAsync(`
 import traceback
 _night_import_report = 'ok'
