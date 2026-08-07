@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from night import Night, Request
+from night import Night, Request, request
 
 
 def test_compiled_route_invokers_cover_hot_call_shapes():
@@ -14,6 +14,10 @@ def test_compiled_route_invokers_cover_hot_call_shapes():
     @app.get('/users/<int:id>')
     def user(id: int):
         return {'id': id}
+
+    @app.get('/global/<int:id>')
+    def global_request(id: int):
+        return {'id': id, 'path_params': request().path_params}
 
     @app.get('/request')
     def request_positional(request: Request):
@@ -32,6 +36,7 @@ def test_compiled_route_invokers_cover_hot_call_shapes():
     try:
         assert client.get('/static').text == 'ok'
         assert json.loads(client.get('/users/42').text) == {'id': 42}
+        assert json.loads(client.get('/global/9').text) == {'id': 9, 'path_params': {'id': 9}}
         assert client.get('/request').text == '/request'
         assert client.get('/keyword').text == '/keyword'
         assert json.loads(client.get('/async/7').text) == {'id': 7}
