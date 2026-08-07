@@ -1496,6 +1496,112 @@ class Night(Router):
             return
         route._night_call_kind = ROUTE_CALL_GENERIC
 
+    def _compile_route_invoker(self, route: Route, plan: _EndpointPlan):
+        fn = route.endpoint
+        coerce = self._coerce_response
+        kind = route._night_call_kind
+        route._night_invoke_async = plan.is_coro
+        route._night_invoke_scalar = None
+
+        if kind == ROUTE_CALL_DIRECT_PARAM:
+            name = route._night_direct_param
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _name=name, _coerce=coerce):
+                    return _coerce(await _fn(params[_name]))
+                async def invoke_scalar(value, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn(value))
+            else:
+                def invoke(req, params, _fn=fn, _name=name, _coerce=coerce):
+                    return _coerce(_fn(params[_name]))
+                def invoke_scalar(value, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn(value))
+            route._night_invoke_scalar = invoke_scalar
+            return invoke
+
+        if kind == ROUTE_CALL_NOARGS:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn())
+            else:
+                def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn())
+            return invoke
+
+        if kind == ROUTE_CALL_REQUEST_KEYWORD:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn(req=req))
+            else:
+                def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn(req=req))
+            return invoke
+
+        if kind == ROUTE_CALL_REQUEST_POSITIONAL:
+            if plan.is_coro:
+                async def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(await _fn(req))
+            else:
+                def invoke(req, params, _fn=fn, _coerce=coerce):
+                    return _coerce(_fn(req))
+            return invoke
+
+        route._night_invoke_async = True
+        async def invoke(req, params, _route=route):
+            return await self._call_route_generic(_route, req, params)
+        return invoke
+
+    @staticmethod
+    def _simple_dynamic_value(route: Route, path: str):
+        prefix, suffix, _name, converter = route._night_simple_dynamic
+        if not path.startswith(prefix):
+            return None
+        if suffix:
+            if not path.endswith(suffix):
+                return None
+            value = path[len(prefix):len(path) - len(suffix)]
+        else:
+            value = path[len(prefix):]
+        if not value or '/' in value:
+            return None
+        if converter == 'int':
+            try:
+                value = int(value)
+            except ValueError:
+                return None
+        return value
+
+    def _match_direct_for_dispatch(self, path: str, method: str):
+        key = path.rstrip('/') or '/'
+
+        method_routes = self._static_method_index.get(method)
+        if method_routes is not None:
+            route = method_routes.get(key)
+            if route is not None and route._night_call_kind == ROUTE_CALL_NOARGS:
+                return route, None
+
+        routes = self._dynamic_method_routes.get(method)
+        if routes and len(routes) == 1:
+            route = routes[0]
+            if route._night_call_kind == ROUTE_CALL_DIRECT_PARAM and route._night_simple_dynamic is not None:
+                value = self._simple_dynamic_value(route, key)
+                if value is not None:
+                    return route, value
+        elif routes:
+            terminal = self._dynamic_terminal_index.get(method)
+            if terminal:
+                base, sep, value = key.rpartition('/')
+                if sep and value:
+                    route = terminal.get(base or '/')
+                    if route is not None and route._night_call_kind == ROUTE_CALL_DIRECT_PARAM:
+                        _prefix, _suffix, _name, converter = route._night_simple_dynamic
+                        if converter == 'int':
+                            try:
+                                value = int(value)
+                            except ValueError:
+                                return None
+                        return route, value
+        return None
+
     def _on_route_added(self, route: Route):
         key = route.raw_path.rstrip("/") or "/"
         plan = _compile_endpoint(route.endpoint)
@@ -1546,9 +1652,11 @@ class Night(Router):
                         self._dynamic_terminal_index.setdefault(method, {})[base] = route
                 self._rebuild_dynamic_matcher(method)
             self._classify_route_call(route, plan)
+            route._night_invoke = self._compile_route_invoker(route, plan)
             return
 
         self._classify_route_call(route, plan)
+        route._night_invoke = self._compile_route_invoker(route, plan)
         self._static_route_index.setdefault(key, []).append(route)
         methods = self._static_methods_by_path.setdefault(key, set())
         for method in route.methods:
@@ -2094,43 +2202,42 @@ class Night(Router):
             return Response(value)
         return PlainTextResponse(str(value))
 
-    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+    async def _call_route_generic(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
         plan = route._night_plan
         fn = route.endpoint
-        kind = route._night_call_kind
+        kwargs = params
 
-        if kind == ROUTE_CALL_DIRECT_PARAM:
-            result = fn(params[route._night_direct_param])
-        elif kind == ROUTE_CALL_NOARGS:
-            result = fn()
-        elif kind == ROUTE_CALL_REQUEST_KEYWORD:
-            result = fn(req=req)
-        elif kind == ROUTE_CALL_REQUEST_POSITIONAL:
-            result = fn(req)
-        else:
-            kwargs = params
-
-            if plan.body_model is not None:
-                payload = await req.json()
-                validated = _validate_dataclass(plan.body_model, payload)
-                target = next((name for name in plan.body_candidates if name not in kwargs), None)
-                if target is not None:
-                    kwargs[target] = validated
-                else:
-                    kwargs.setdefault("data", validated)
-
-            if plan.call_mode == CALL_REQUEST_KEYWORD:
-                result = fn(req=req, **kwargs)
-            elif plan.call_mode == CALL_REQUEST_POSITIONAL:
-                result = fn(req, **kwargs)
-            elif kwargs:
-                result = fn(**kwargs)
+        if plan.body_model is not None:
+            payload = await req.json()
+            validated = _validate_dataclass(plan.body_model, payload)
+            target = next((name for name in plan.body_candidates if name not in kwargs), None)
+            if target is not None:
+                kwargs[target] = validated
             else:
-                result = fn()
+                kwargs.setdefault("data", validated)
+
+        if plan.call_mode == CALL_REQUEST_KEYWORD:
+            result = fn(req=req, **kwargs)
+        elif plan.call_mode == CALL_REQUEST_POSITIONAL:
+            result = fn(req, **kwargs)
+        elif kwargs:
+            result = fn(**kwargs)
+        else:
+            result = fn()
 
         if plan.is_coro:
             result = await t.cast(t.Awaitable, result)
         return self._coerce_response(result)
+
+    async def _call_route(self, route: Route, req: Request, params: dict[str, t.Any]) -> Response:
+        invoke = getattr(route, "_night_invoke", None)
+        if invoke is None:
+            # Compatibility path for synthetic routes used by _call_endpoint().
+            return await self._call_route_generic(route, req, params)
+        result = invoke(req, params)
+        if getattr(route, "_night_invoke_async", False):
+            return await result
+        return result
     async def _call_endpoint(self, fn: t.Callable, req: Request, params: dict[str, t.Any]) -> Response:
         plan = self._endpoint_plans.get(fn)
         if plan is None:
@@ -2175,15 +2282,42 @@ class Night(Router):
                 return v
         return None
 
-    async def _dispatch(self, req: Request) -> Response:
-        early = await self._run_before_hooks(req)
-        if early is not None:
-            return early
+    async def _dispatch(self, req: Request, path: str | None = None, method: str | None = None) -> Response:
+        path = req.path if path is None else path
+        method = req.method if method is None else method
+        if self.before_hooks:
+            early = await self._run_before_hooks(req)
+            if early is not None:
+                return early
 
-        route, params = self._match_method(req.path, req.method)
-        req.path_params = params
-        resp = await self._call_route(route, req, params)
-        resp = await self._run_after_hooks(req, resp)
+        direct = self._match_direct_for_dispatch(path, method)
+        if direct is not None:
+            route, value = direct
+            if route._night_call_kind == ROUTE_CALL_DIRECT_PARAM:
+                name = route._night_direct_param
+                req.path_params[name] = value
+                invoke = route._night_invoke_scalar
+                if route._night_invoke_async:
+                    resp = await invoke(value)
+                else:
+                    resp = invoke(value)
+            else:
+                invoke = route._night_invoke
+                if route._night_invoke_async:
+                    resp = await invoke(req, req.path_params)
+                else:
+                    resp = invoke(req, req.path_params)
+        else:
+            route, params = self._match_method(path, method)
+            req.path_params = params
+            invoke = route._night_invoke
+            if route._night_invoke_async:
+                resp = await invoke(req, params)
+            else:
+                resp = invoke(req, params)
+
+        if self.after_hooks:
+            resp = await self._run_after_hooks(req, resp)
         return resp
 
     def _allowed_methods_for_path(self, path: str) -> set[str]:
@@ -2216,23 +2350,13 @@ class Night(Router):
         else:
             request_scope = scope
         req = Request(scope=request_scope, receive=receive, send=send, max_body_size=self.max_body_size)
+        method = (request_scope.get("method") or "GET").upper()
+        path = request_scope.get("path") or "/"
         token = _current_request.set(req)
         try:
-
-            async def call_next(i: int = 0) -> Response:
-                if i >= len(self.middlewares):
-                    return await self._dispatch(req)
-
-                mw = self.middlewares[i]
-
-                async def nxt() -> Response:
-                    return await call_next(i + 1)
-
-                return await mw(req, nxt)
-
             # Automatic OPTIONS and HEAD support.
-            if req.method == "OPTIONS":
-                allowed = self._allowed_methods_for_path(req.path)
+            if method == "OPTIONS":
+                allowed = self._allowed_methods_for_path(path)
                 if allowed:
                     allowed_with_opts = set(allowed) | {"OPTIONS"}
                     hdrs = {
@@ -2244,17 +2368,29 @@ class Night(Router):
                 await resp(scope, receive, send)
                 return
 
-            is_head = req.method == "HEAD"
+            is_head = method == "HEAD"
             if is_head:
                 # Treat HEAD as GET for routing; body will be stripped later.
                 req.scope = dict(req.scope)
                 req.scope["method"] = "GET"
+                method = "GET"
 
             try:
                 if self.middlewares:
+                    async def call_next(i: int = 0) -> Response:
+                        if i >= len(self.middlewares):
+                            return await self._dispatch(req, path, method)
+
+                        mw = self.middlewares[i]
+
+                        async def nxt() -> Response:
+                            return await call_next(i + 1)
+
+                        return await mw(req, nxt)
+
                     resp = await call_next(0)
                 else:
-                    resp = await self._dispatch(req)
+                    resp = await self._dispatch(req, path, method)
             except HTTPError as he:
                 handler = self._find_error_handler(he)
                 if handler is not None:
