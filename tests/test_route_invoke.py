@@ -27,6 +27,10 @@ def test_compiled_route_invokers_cover_hot_call_shapes():
     def request_keyword(*, req: Request):
         return req.path
 
+    @app.get('/mixed/<int:user_id>')
+    def mixed_request(user_id: int, req: Request):
+        return {'user_id': user_id, 'path': req.path, 'path_params': req.path_params}
+
     @app.get('/async/<int:id>')
     async def async_user(id: int):
         await asyncio.sleep(0)
@@ -39,6 +43,11 @@ def test_compiled_route_invokers_cover_hot_call_shapes():
         assert json.loads(client.get('/global/9').text) == {'id': 9, 'path_params': {'id': 9}}
         assert client.get('/request').text == '/request'
         assert client.get('/keyword').text == '/keyword'
+        assert json.loads(client.get('/mixed/23').text) == {
+            'user_id': 23,
+            'path': '/mixed/23',
+            'path_params': {'user_id': 23},
+        }
         assert json.loads(client.get('/async/7').text) == {'id': 7}
 
         for route in app.routes:
