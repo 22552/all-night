@@ -8,7 +8,7 @@ body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0
 <h1>Night in the Browser</h1>
 <p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
 <p id="status">Loading Pyodide module…</p>
-<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong></div>
+<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong></div>
 <div class="row">
   <select id="method"><option>GET</option><option>POST</option></select>
   <input id="path" value="/" placeholder="/hello/night">
@@ -17,7 +17,8 @@ body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0
 <button id="run" disabled>Run Night request</button>
 <pre id="output"></pre>
 <script type="module">
-const PYODIDE_VERSIONS = ['0.28.3', '0.27.3'];
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const PYODIDE_VERSIONS = isIOS ? ['0.27.3', '0.28.3'] : ['0.28.3', '0.27.3'];
 const APP_BASE = new URL('./', location.href);
 const status = document.querySelector('#status');
 const run = document.querySelector('#run');
@@ -27,6 +28,7 @@ const pathEl = document.querySelector('#path');
 const bodyEl = document.querySelector('#body');
 const stunIpEl = document.querySelector('#stun-ip');
 const pyodideVersionEl = document.querySelector('#pyodide-version');
+const pyodideAttemptsEl = document.querySelector('#pyodide-attempts');
 let stunPublicIp = null;
 let pyodide;
 
@@ -38,16 +40,23 @@ async function text(url){
 
 async function loadCompatiblePyodide(){
   const errors = [];
+  const attempts = [];
   for(const version of PYODIDE_VERSIONS){
     const base = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
+    attempts.push(`${version}…`);
+    pyodideAttemptsEl.textContent = attempts.join(' → ');
     try{
       status.textContent = `Loading Pyodide ${version} module…`;
       const {loadPyodide} = await import(base + 'pyodide.mjs');
       status.textContent = `Starting Python runtime (Pyodide ${version})…`;
       const runtime = await loadPyodide({indexURL: base});
+      attempts[attempts.length - 1] = `${version} ✓`;
+      pyodideAttemptsEl.textContent = attempts.join(' → ');
       pyodideVersionEl.textContent = version;
       return runtime;
     }catch(error){
+      attempts[attempts.length - 1] = `${version} ✗`;
+      pyodideAttemptsEl.textContent = attempts.join(' → ');
       errors.push(`Pyodide ${version}: ${String(error?.message || error)}`);
       console.warn(`Pyodide ${version} failed`, error);
     }
@@ -97,7 +106,6 @@ const stunPromise = detectPublicIp().then(ip=>{
 
 try {
   pyodide = await loadCompatiblePyodide();
-
   status.textContent = 'Loading Night sources…';
   pyodide.FS.mkdirTree('/night');
   const [night, web, app] = await Promise.all([
@@ -108,7 +116,6 @@ try {
   pyodide.FS.writeFile('/night/night.py', night);
   pyodide.FS.writeFile('/night/night_web.py', web);
   pyodide.FS.writeFile('/night/app.py', app);
-
   status.textContent = 'Starting Night…';
   await pyodide.runPythonAsync(`
 import sys
