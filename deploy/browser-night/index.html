@@ -8,7 +8,7 @@ body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0
 <h1>Night in the Browser</h1>
 <p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
 <p id="status">Loading Pyodide module…</p>
-<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong></div>
+<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong><br>Night: <strong id="night-status">waiting…</strong></div>
 <div class="row">
   <select id="method"><option>GET</option><option>POST</option></select>
   <input id="path" value="/" placeholder="/hello/night">
@@ -29,8 +29,10 @@ const bodyEl = document.querySelector('#body');
 const stunIpEl = document.querySelector('#stun-ip');
 const pyodideVersionEl = document.querySelector('#pyodide-version');
 const pyodideAttemptsEl = document.querySelector('#pyodide-attempts');
+const nightStatusEl = document.querySelector('#night-status');
 let stunPublicIp = null;
 let pyodide;
+let runtimeReady = false;
 
 async function text(url){
   const r = await fetch(url, {cache:'no-store'});
@@ -53,6 +55,7 @@ async function loadCompatiblePyodide(){
       attempts[attempts.length - 1] = `${version} ✓`;
       pyodideAttemptsEl.textContent = attempts.join(' → ');
       pyodideVersionEl.textContent = version;
+      runtimeReady = true;
       return runtime;
     }catch(error){
       attempts[attempts.length - 1] = `${version} ✗`;
@@ -106,29 +109,37 @@ const stunPromise = detectPublicIp().then(ip=>{
 
 try {
   pyodide = await loadCompatiblePyodide();
+  nightStatusEl.textContent = 'loading sources…';
   status.textContent = 'Loading Night sources…';
   pyodide.FS.mkdirTree('/night');
-  const [night, web, app] = await Promise.all([
+  const [night, web, requestInfo, app] = await Promise.all([
     text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
     text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
+    text('https://raw.githubusercontent.com/22552/all-night/main/night_request_info.py'),
     text(new URL('app.py', APP_BASE)),
   ]);
   pyodide.FS.writeFile('/night/night.py', night);
   pyodide.FS.writeFile('/night/night_web.py', web);
+  pyodide.FS.writeFile('/night/night_request_info.py', requestInfo);
   pyodide.FS.writeFile('/night/app.py', app);
+
+  nightStatusEl.textContent = 'importing…';
   status.textContent = 'Starting Night…';
   await pyodide.runPythonAsync(`
 import sys
 sys.path.insert(0, '/night')
 from app import app
 from night_web import handle_web
+from night_request_info import from_scope
 `);
+  nightStatusEl.textContent = 'ready ✓';
   await stunPromise;
   status.textContent = 'Ready — Night is running locally in your browser.';
   run.disabled = false;
 } catch (e) {
-  status.textContent = 'Browser Night failed to start';
-  pyodideVersionEl.textContent = 'failed';
+  status.textContent = runtimeReady ? 'Night failed to start' : 'Pyodide failed to start';
+  if(!runtimeReady) pyodideVersionEl.textContent = 'failed';
+  if(runtimeReady) nightStatusEl.textContent = 'failed ✗';
   output.textContent = String(e?.stack || e);
 }
 
