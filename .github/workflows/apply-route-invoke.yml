@@ -3,7 +3,7 @@ on:
   push:
     branches: [perf/route-invoke]
     paths:
-      - tools/apply_route_invoke.py
+      - tools/apply_route_invoke_scalar.py
       - .github/workflows/apply-route-invoke.yml
 permissions:
   contents: write
@@ -17,10 +17,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: python tools/apply_route_invoke.py
+      - run: python tools/apply_route_invoke_scalar.py
       - run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add night.py
-          git commit -m 'perf: compile route invokers at registration' || exit 0
+          git commit -m 'perf: compress route invoke scalar fast path' || exit 0
           git push
