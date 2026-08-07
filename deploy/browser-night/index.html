@@ -148,6 +148,17 @@ const stunPromise = detectPublicIp().then(ip=>{
 
 try {
   pyodide = await loadCompatiblePyodide();
+
+  nightStatusEl.textContent = 'loading sqlite3…';
+  status.textContent = 'Loading sqlite3 support…';
+  try {
+    await pyodide.loadPackage('sqlite3');
+  } catch (sqliteError) {
+    const sqliteReport = String(sqliteError?.stack || sqliteError);
+    showPythonFailure('sqlite3 package load', sqliteReport);
+    throw sqliteError;
+  }
+
   nightStatusEl.textContent = 'loading sources…';
   status.textContent = 'Loading Night sources…';
   pyodide.FS.mkdirTree('/night');
