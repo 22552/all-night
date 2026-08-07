@@ -2,7 +2,7 @@
 
 **Night** is a tiny, single-file ASGI web framework for Python 3.11+.
 
-It keeps the core dependency-free, supports sync and async handlers, and includes routing, request/response helpers, validation, sessions, testing, realtime APIs, JSON-RPC, OpenAPI, a small SQLite ORM, and direct Cloudflare Python Workers integration.
+It keeps the core dependency-free, supports sync and async handlers, and includes routing, request/response helpers, validation, sessions, testing, realtime APIs, JSON-RPC, OpenAPI, a small SQLite ORM, Cloudflare Python Workers integration, stateless MCP tooling, and Vercel ASGI deployment.
 
 ```bash
 pip install -U all-night
@@ -36,13 +36,33 @@ night run app.py
 
 ## Why Night
 
-- **Single-file core** — the published package is centered on `night.py` and has no required runtime dependencies on normal CPython.
+- **Single-file core** — the framework core stays in `night.py` and has no required runtime dependencies on normal CPython.
 - **Fast routing** — static routes use direct indexes; common dynamic routes are compiled into specialized fast paths so large route tables do not require linear scans.
 - **Sync + async** — handlers are classified at registration time and Night compiles route-specific invokers to reduce per-request branching.
 - **HTTP batteries included** — JSON, forms, multipart uploads, cookies, sessions, CSRF helpers, streaming, SSE, WebSocket, static files, middleware, hooks, and error handlers.
 - **Typed request bodies** — validate nested dataclasses, optional values, and `list[T]` request bodies.
 - **Tooling** — built-in in-process `TestClient`, CLI, named routes, OpenAPI generation, extensions, JSON-RPC, and a lightweight SQLite ORM.
+- **MCP 2026-07-28** — the optional `night_mcp` module exposes the existing RPC registry as stateless `server/discover`, `tools/list`, and `tools/call` HTTP endpoints without adding runtime dependencies.
 - **Cloudflare Python Workers** — `Night.cloudflare_fetch()` bridges Workers Requests into Night, while `Night.cloudflare_rpc()` exposes the same `@app.rpc(...)` registry over Workers RPC/Service Bindings. Cloudflare-specific imports stay optional outside Workers.
+- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; no request/response adapter is needed.
+
+## MCP
+
+```python
+from night import Night
+from night_mcp import enable_mcp
+
+app = Night()
+mcp = enable_mcp(app)
+
+@mcp.tool(description="Add two integers")
+def add(a: int, b: int):
+    return {"value": a + b}
+```
+
+Existing `@app.rpc(...)` methods are also visible as MCP tools. The first implementation targets the stateless MCP `2026-07-28` core with `server/discover`, `tools/list`, `tools/call`, header/body validation, cache hints, and server metadata.
+
+See the [MCP guide](docs/guides/mcp.md).
 
 ## Cloudflare Workers
 
@@ -65,12 +85,30 @@ class Default(WorkerEntrypoint):
 
 Night uses the official `workers-runtime-sdk` conversion layer for Workers RPC values. See the [Cloudflare Workers guide](docs/guides/cloudflare-workers.md).
 
+## Vercel Functions
+
+Vercel's Python runtime can serve Night directly because Night exposes a standard ASGI `app`.
+
+```python
+from night import Night
+
+app = Night()
+
+@app.get("/")
+def index():
+    return {"hello": "vercel"}
+```
+
+A ready-to-copy template lives in [`deploy/vercel-night`](deploy/vercel-night). See the [Vercel deployment guide](docs/operations/vercel.md).
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Quickstart](docs/getting-started/quickstart.md)
 - [HTTP guide](docs/guides/http.md)
+- [MCP](docs/guides/mcp.md)
 - [Cloudflare Workers](docs/guides/cloudflare-workers.md)
+- [Vercel Functions](docs/operations/vercel.md)
 - [Deployment](docs/operations/deployment.md)
 - [API reference](docs/reference/application.md)
 - [日本語ドキュメント](docs/ja/README.md)
@@ -81,4 +119,4 @@ For coding agents and automated tooling, see [`SKILL.md`](SKILL.md).
 
 Current PyPI release: **0.1.1**.
 
-Night is alpha software. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
+Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
