@@ -37,6 +37,23 @@ def _header_pairs(headers: t.Any) -> list[tuple[str, str]]:
     return [(str(key), str(value)) for key, value in items]
 
 
+def _platform_client(headers: list[tuple[str, str]]) -> tuple[str, int] | None:
+    """Return a client address from platform-owned proxy headers.
+
+    Cloudflare and Netlify inject dedicated headers at their edge, so Web
+    runtimes that cannot expose a socket peer can still populate ASGI
+    ``scope['client']``. Generic ``X-Forwarded-For`` is deliberately not
+    trusted here because applications may be reachable without a trusted
+    proxy and clients can forge that header themselves.
+    """
+    values = {key.lower(): value.strip() for key, value in headers}
+    for name in ("cf-connecting-ip", "x-nf-client-connection-ip"):
+        value = values.get(name)
+        if value:
+            return value, 0
+    return None
+
+
 async def handle_web(
     app: t.Any,
     *,
@@ -51,7 +68,8 @@ async def handle_web(
     The adapter only accepts ordinary Python primitives. JavaScript hosts can
     therefore convert a standard ``Request`` into ``method``/``url``/headers/
     body and call this function through Pyodide without importing any host SDK
-    into Night itself.
+    into Night itself. If ``client`` is not supplied, known platform-owned IP
+    headers from Cloudflare or Netlify are normalized into the ASGI client.
     """
 
     parsed = urllib.parse.urlsplit(str(url))
@@ -71,10 +89,13 @@ async def handle_web(
     decoded_path = urllib.parse.unquote(encoded_path)
     scheme = parsed.scheme or "https"
     port = parsed.port or (443 if scheme == "https" else 80)
+    header_pairs = _header_pairs(headers)
     header_bytes = [
         (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
-        for key, value in _header_pairs(headers)
+        for key, value in header_pairs
     ]
+    if client is None:
+        client = _platform_client(header_pairs)
 
     scope = {
         "type": "http",
