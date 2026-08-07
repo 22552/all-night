@@ -1,0 +1,26 @@
+name: Apply edge prewarm optimization
+on:
+  push:
+    branches: [perf/edge-prewarm]
+    paths:
+      - tools/apply_edge_prewarm.py
+      - .github/workflows/apply-edge-prewarm.yml
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/edge-prewarm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python tools/apply_edge_prewarm.py
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py
+          git commit -m 'perf: prewarm Cloudflare edge adapter and bypass ASGI events' || exit 0
+          git push
