@@ -37,21 +37,47 @@ def _header_pairs(headers: t.Any) -> list[tuple[str, str]]:
     return [(str(key), str(value)) for key, value in items]
 
 
-def _platform_client(headers: list[tuple[str, str]]) -> tuple[str, int] | None:
-    """Return a client address from platform-owned proxy headers.
+def _platform_metadata(headers: list[tuple[str, str]]) -> dict[str, t.Any]:
+    """Normalize trusted edge metadata exposed through platform headers.
 
-    Cloudflare and Netlify inject dedicated headers at their edge, so Web
-    runtimes that cannot expose a socket peer can still populate ASGI
-    ``scope['client']``. Generic ``X-Forwarded-For`` is deliberately not
-    trusted here because applications may be reachable without a trusted
-    proxy and clients can forge that header themselves.
+    Generic proxy headers such as ``X-Forwarded-For`` are intentionally not
+    trusted here. The adapter only consumes platform-owned headers with clear
+    semantics, while ordinary ASGI servers can populate ``scope`` directly.
     """
     values = {key.lower(): value.strip() for key, value in headers}
-    for name in ("cf-connecting-ip", "x-nf-client-connection-ip"):
-        value = values.get(name)
-        if value:
-            return value, 0
-    return None
+    info: dict[str, t.Any] = {}
+
+    if values.get("cf-ray") or values.get("cf-connecting-ip"):
+        info["platform"] = "cloudflare"
+        info["client_ip"] = values.get("cf-connecting-ip")
+        info["request_id"] = values.get("cf-ray")
+        info["country"] = values.get("cf-ipcountry")
+        info["city"] = values.get("cf-ipcity")
+        info["region"] = values.get("cf-region")
+        info["region_code"] = values.get("cf-region-code")
+        info["postal_code"] = values.get("cf-postal-code")
+        info["timezone"] = values.get("cf-timezone")
+        info["continent"] = values.get("cf-ipcontinent")
+        info["latitude"] = values.get("cf-iplatitude")
+        info["longitude"] = values.get("cf-iplongitude")
+    elif any(key.startswith("x-nf-") for key in values):
+        info["platform"] = "netlify"
+        info["client_ip"] = values.get("x-nf-client-connection-ip")
+        info["request_id"] = values.get("x-nf-request-id")
+    elif any(key.startswith("x-vercel-") for key in values):
+        info["platform"] = "vercel"
+        info["client_ip"] = values.get("x-real-ip")
+        info["request_id"] = values.get("x-vercel-id")
+        info["country"] = values.get("x-vercel-ip-country")
+        info["city"] = values.get("x-vercel-ip-city")
+        info["region"] = values.get("x-vercel-ip-country-region")
+        info["latitude"] = values.get("x-vercel-ip-latitude")
+        info["longitude"] = values.get("x-vercel-ip-longitude")
+
+    info["user_agent"] = values.get("user-agent")
+    info["accept_language"] = values.get("accept-language")
+    info["referrer"] = values.get("referer")
+    return {key: value for key, value in info.items() if value not in (None, "")}
 
 
 async def handle_web(
@@ -62,14 +88,14 @@ async def handle_web(
     headers: t.Any = None,
     body: bytes | bytearray | memoryview = b"",
     client: tuple[str, int] | None = None,
+    platform_info: dict[str, t.Any] | None = None,
 ) -> WebResult:
     """Run a buffered Web-style HTTP request through a Night ASGI app.
 
-    The adapter only accepts ordinary Python primitives. JavaScript hosts can
-    therefore convert a standard ``Request`` into ``method``/``url``/headers/
-    body and call this function through Pyodide without importing any host SDK
-    into Night itself. If ``client`` is not supplied, known platform-owned IP
-    headers from Cloudflare or Netlify are normalized into the ASGI client.
+    JavaScript hosts can convert a standard ``Request`` into ordinary Python
+    primitives and call this function through Pyodide. Known edge metadata is
+    normalized into ``scope['state']['night_request_info']`` so Night exposes a
+    stable API independent of the deployment platform.
     """
 
     parsed = urllib.parse.urlsplit(str(url))
@@ -77,8 +103,6 @@ async def handle_web(
     body_bytes = bytes(body)
     max_body_size = getattr(app, "max_body_size", None)
     if max_body_size is not None and len(body_bytes) > int(max_body_size):
-        # Avoid importing Night's HTTPError here: this module also works with
-        # any ASGI application exposing the same primitives.
         return WebResult(
             413,
             [("content-type", "text/plain; charset=utf-8")],
@@ -90,12 +114,17 @@ async def handle_web(
     scheme = parsed.scheme or "https"
     port = parsed.port or (443 if scheme == "https" else 80)
     header_pairs = _header_pairs(headers)
+    info = _platform_metadata(header_pairs)
+    if platform_info:
+        info.update({str(key): value for key, value in platform_info.items() if value is not None})
+
+    if client is None and info.get("client_ip"):
+        client = (str(info["client_ip"]), 0)
+
     header_bytes = [
         (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
         for key, value in header_pairs
     ]
-    if client is None:
-        client = _platform_client(header_pairs)
 
     scope = {
         "type": "http",
@@ -108,6 +137,7 @@ async def handle_web(
         "headers": header_bytes,
         "server": (parsed.hostname or "web", port),
         "client": client,
+        "state": {"night_request_info": info},
     }
 
     received = False
