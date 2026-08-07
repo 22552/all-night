@@ -2,7 +2,8 @@ import json
 import uuid
 
 from night import HTMLResponse, Night
-from workers import WorkerEntrypoint
+from workers import Response as WorkersResponse, WorkerEntrypoint
+from workers.rpc import python_from_rpc as _python_from_rpc, python_to_rpc as _python_to_rpc
 
 
 app = Night()
@@ -109,11 +110,19 @@ async def todo_count():
     return len(keys)
 
 
+# Python Workers snapshot top-level execution at deploy time. Keep Cloudflare
+# SDK imports and deterministic router finalization here so the first live
+# request does not pay those one-time costs. No I/O or request state is touched.
+_EDGE_PREWARM_REFS = (WorkersResponse, _python_from_rpc, _python_to_rpc)
+for _method in tuple(app._dynamic_method_routes):
+    app._rebuild_dynamic_matcher(_method)
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         global _kv
         _kv = self.env.TODOS
-        return await app.cloudflare_fetch(request)
+        return await app.cloudflare_fetch(request, response_class=WorkersResponse)
 
     async def night_rpc(self, method, args=None, kwargs=None):
         global _kv
