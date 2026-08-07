@@ -1,165 +1,55 @@
 <!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Browser Night</title>
 <style>
-:root{color-scheme:dark}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#0d0f12;color:#eee;font-family:system-ui,sans-serif}.browser{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;padding:10px;background:#171a1f;border-bottom:1px solid #2d333b}.browser button{border:0;border-radius:7px;background:#2a3038;color:#fff;padding:9px 11px;font:inherit}.browser button:disabled{opacity:.4}.browser form{display:flex;gap:8px;flex:1}.browser input{width:100%;border:1px solid #3a424d;border-radius:8px;background:#0f1216;color:#fff;padding:9px 11px;font:inherit}.status{padding:7px 12px;background:#11151a;border-bottom:1px solid #252b33;color:#aab4c0;font-size:12px}.status .error{color:#ffb4b4}.page{min-height:calc(100vh - 90px);padding:20px}.page pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#171a1f;padding:16px;border-radius:10px}.loading{opacity:.72}
+:root{color-scheme:dark;--bg:#0b0d10;--panel:#13171c;--panel2:#181d24;--line:#28303a;--text:#f5f7fa;--muted:#98a4b3;--accent:#7cc4ff;--danger:#ff8d8d;--ok:#86e1a7}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}.app{min-height:100vh;display:grid;grid-template-rows:auto auto auto 1fr}.titlebar{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#0f1216;border-bottom:1px solid var(--line);min-height:44px}.traffic{display:flex;gap:7px}.dot{width:11px;height:11px;border-radius:50%;background:#3a414b}.brand{font-weight:700;letter-spacing:.2px}.runtime-pill{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 8px;border-radius:999px;background:#10141a}.tabs{display:flex;gap:8px;padding:8px 10px 0;background:var(--panel);border-bottom:1px solid var(--line);overflow:auto}.tab{display:flex;align-items:center;gap:8px;min-width:170px;max-width:260px;padding:9px 12px;border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0;background:#10141a;color:var(--muted)}.tab.active{background:var(--panel2);color:var(--text)}.tab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.tab-close{opacity:.6}.toolbar{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:8px;align-items:center;padding:10px;background:var(--panel2);border-bottom:1px solid var(--line)}.iconbtn,.go,.toolbtn{border:1px solid var(--line);border-radius:9px;background:#11161c;color:var(--text);padding:9px 11px;cursor:pointer}.iconbtn:disabled{opacity:.35}.address-wrap{position:relative}.address{width:100%;padding:10px 12px 10px 34px;border:1px solid var(--line);border-radius:10px;background:#0d1116;color:var(--text);outline:none}.address:focus{border-color:#4d87b3;box-shadow:0 0 0 3px #4d87b322}.lock{position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted)}.progress{height:2px;background:transparent;overflow:hidden}.progress>span{display:block;height:100%;width:0;background:var(--accent);transition:width .18s ease}.progress.loading>span{width:72%;animation:pulse 1.2s ease-in-out infinite alternate}@keyframes pulse{to{width:93%}}.workspace{display:grid;grid-template-columns:1fr 300px;min-height:0}.viewport{min-width:0;position:relative;background:#fff;color:#111;overflow:auto}.page{min-height:100%;padding:24px}.page pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0f1318;color:#e9eef4;padding:18px;border-radius:12px;margin:0}.loading-card{color:#d8e1ea;background:#12171d;border:1px solid var(--line);padding:18px;border-radius:12px;max-width:520px}.sidebar{border-left:1px solid var(--line);background:#0f1318;padding:14px;overflow:auto}.sidebar h3{font-size:13px;margin:0 0 12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.kv{display:grid;grid-template-columns:90px 1fr;gap:7px 10px;font-size:13px;margin-bottom:18px}.kv div:nth-child(odd){color:var(--muted)}.statusbar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:12px;align-items:center;padding:7px 10px;background:#0d1014dd;backdrop-filter:blur(12px);border-top:1px solid var(--line);font-size:12px;color:var(--muted);z-index:30}.statusbar .ok{color:var(--ok)}.statusbar .error{color:var(--danger)}.spacer{flex:1}.hidden{display:none!important}@media(max-width:820px){.workspace{grid-template-columns:1fr}.sidebar{display:none}.toolbar{grid-template-columns:auto auto auto 1fr auto}.toolbtn{display:none}.tab{min-width:140px}.page{padding:16px}.titlebar{padding-top:max(8px,env(safe-area-inset-top))}}
 </style>
-<div class="browser">
-  <button id="back" title="Back">←</button>
-  <button id="forward" title="Forward">→</button>
-  <button id="reload" title="Reload">↻</button>
-  <form id="nav-form">
-    <input id="address" autocomplete="off" spellcheck="false" aria-label="Night path">
-    <button>Go</button>
-  </form>
+<div class="app">
+  <header class="titlebar">
+    <div class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <div class="brand">Browser Night</div>
+    <div class="runtime-pill" id="runtime-pill">cold start</div>
+  </header>
+  <div class="tabs"><div class="tab active"><span>◉</span><span class="tab-title" id="tab-title">Night</span><span class="tab-close">×</span></div></div>
+  <div>
+    <div class="toolbar">
+      <button class="iconbtn" id="back" title="Back">←</button>
+      <button class="iconbtn" id="forward" title="Forward">→</button>
+      <button class="iconbtn" id="reload" title="Reload">↻</button>
+      <form id="nav-form" class="address-wrap"><span class="lock">◆</span><input class="address" id="address" autocomplete="off" spellcheck="false" aria-label="Night path"></form>
+      <button class="go" id="go">Go</button>
+      <button class="toolbtn" id="toggle-meta">Details</button>
+    </div>
+    <div class="progress" id="progress"><span></span></div>
+  </div>
+  <div class="workspace">
+    <main class="viewport"><section class="page" id="page"><div class="loading-card">Starting Browser Night…</div></section></main>
+    <aside class="sidebar" id="sidebar">
+      <h3>Request</h3><div class="kv"><div>Method</div><div id="meta-method">GET</div><div>Path</div><div id="meta-path">/</div><div>Status</div><div id="meta-status">—</div><div>Type</div><div id="meta-type">—</div></div>
+      <h3>Runtime</h3><div class="kv"><div>Pyodide</div><div id="meta-pyodide">—</div><div>Platform</div><div>Browser</div><div>Public IP</div><div id="meta-ip">—</div><div>Cold start</div><div id="meta-cold">running…</div></div>
+    </aside>
+  </div>
 </div>
-<div class="status" id="status">Cold starting Browser Night…</div>
-<main class="page" id="page"><div class="loading">Loading Pyodide…</div></main>
+<div class="statusbar"><span id="status-dot">●</span><span id="status">Cold starting Browser Night…</span><span class="spacer"></span><span id="timing">—</span></div>
 <script type="module">
 const PROJECT_BASE='/all-night';
 const ASSET_BASE=new URL(PROJECT_BASE+'/',location.origin);
 const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const PYODIDE_VERSIONS=isIOS?['0.27.3','0.28.3']:['0.28.3','0.27.3'];
-const statusEl=document.querySelector('#status');
-const pageEl=document.querySelector('#page');
-const addressEl=document.querySelector('#address');
-const navForm=document.querySelector('#nav-form');
-const backButton=document.querySelector('#back');
-const forwardButton=document.querySelector('#forward');
-const reloadButton=document.querySelector('#reload');
-let pyodide=null;
-let publicIp=null;
-let ready=false;
-let currentVersion='';
-
-function appPathFromLocation(){
-  let path=location.pathname;
-  if(path===PROJECT_BASE||path===PROJECT_BASE+'/') path='/';
-  else if(path.startsWith(PROJECT_BASE+'/')) path=path.slice(PROJECT_BASE.length)||'/';
-  path+=location.search;
-  return path;
-}
-function browserUrl(path){
-  if(!path.startsWith('/')) path='/'+path;
-  return PROJECT_BASE+(path==='/'?'/':path);
-}
-function setStatus(message,error=false){statusEl.textContent=message;statusEl.classList.toggle('error',error)}
-async function text(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`Fetch failed: ${url} (${r.status})`);return await r.text()}
-async function loadCompatiblePyodide(){
-  const errors=[];
-  for(const version of PYODIDE_VERSIONS){
-    const base=`https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
-    try{
-      setStatus(`Cold start: loading Pyodide ${version}…`);
-      const{loadPyodide}=await import(base+'pyodide.mjs');
-      const runtime=await loadPyodide({indexURL:base});
-      currentVersion=version;
-      return runtime;
-    }catch(error){errors.push(`${version}: ${String(error?.message||error)}`)}
-  }
-  throw new Error(`No Pyodide runtime could start. ${errors.join(' | ')}`);
-}
-async function discoverPublicIp(){
-  if(!globalThis.RTCPeerConnection)return null;
-  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});
-  try{
-    pc.createDataChannel('night-stun');
-    return await new Promise(async resolve=>{
-      let done=false;const finish=v=>{if(!done){done=true;resolve(v)}};const timer=setTimeout(()=>finish(null),3500);
-      pc.onicecandidate=e=>{const c=e.candidate;if(!c){clearTimeout(timer);finish(null);return}if(c.type!=='srflx')return;const a=c.address||c.candidate?.split(' ')[4]||null;if(a){clearTimeout(timer);finish(a)}};
-      await pc.setLocalDescription(await pc.createOffer());
-    });
-  }catch{return null}finally{pc.close()}
-}
-async function boot(){
-  pyodide=await loadCompatiblePyodide();
-  setStatus(`Cold start: loading sqlite3 on Pyodide ${currentVersion}…`);
-  await pyodide.loadPackage('sqlite3');
-  setStatus('Cold start: loading Night…');
-  pyodide.FS.mkdirTree('/night');
-  const[night,web,requestInfo,app]=await Promise.all([
-    text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),
-    text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),
-    text('https://raw.githubusercontent.com/22552/all-night/main/night_request_info.py'),
-    text(new URL('app.py',ASSET_BASE)),
-  ]);
-  pyodide.FS.writeFile('/night/night.py',night);
-  pyodide.FS.writeFile('/night/night_web.py',web);
-  pyodide.FS.writeFile('/night/night_request_info.py',requestInfo);
-  pyodide.FS.writeFile('/night/app.py',app);
-  await pyodide.runPythonAsync(`
-import sys
-sys.path.insert(0,'/night')
-from app import app
-from night_web import handle_web
-`);
-  publicIp=await discoverPublicIp();
-  ready=true;
-  setStatus(`Ready · Pyodide ${currentVersion}${publicIp?' · STUN '+publicIp:''}`);
-}
-async function dispatch(path,{push=false,replace=false}={}){
-  if(!ready)return;
-  if(!path.startsWith('/'))path='/'+path;
-  if(push)history.pushState({night:true},'',browserUrl(path));
-  else if(replace)history.replaceState({night:true},'',browserUrl(path));
-  addressEl.value=path;
-  pageEl.innerHTML='<div class="loading">Loading route…</div>';
-  setStatus(`Night → GET ${path}`);
-  try{
-    pyodide.globals.set('_url',new URL(path,location.origin).href);
-    pyodide.globals.set('_client_ip',publicIp);
-    const result=await pyodide.runPythonAsync(`
-_info={'platform':'browser'}
-if _client_ip:
-    _info['client_ip']=str(_client_ip)
-_result=await handle_web(app,method='GET',url=_url,headers=[('user-agent','Browser Night / Pyodide')],body=b'',platform_info=_info)
-_result.as_tuple()
-`);
-    const js=result.toJs({create_proxies:false});
-    const statusCode=Number(js[0]);
-    const headers=js[1];
-    const raw=js[2] instanceof Uint8Array?js[2]:new Uint8Array(js[2]);
-    const body=new TextDecoder().decode(raw);
-    const contentType=headers.find(([k])=>String(k).toLowerCase()==='content-type')?.[1]||'';
-    setStatus(`Night ${statusCode} · ${path} · Pyodide ${currentVersion}`);
-    if(contentType.includes('text/html')){
-      pageEl.innerHTML=body;
-    }else if(contentType.includes('application/json')){
-      try{pageEl.innerHTML=`<pre>${escapeHtml(JSON.stringify(JSON.parse(body),null,2))}</pre>`}catch{pageEl.innerHTML=`<pre>${escapeHtml(body)}</pre>`}
-    }else{
-      pageEl.innerHTML=`<pre>${escapeHtml(body)}</pre>`;
-    }
-  }catch(error){
-    setStatus(`Route failed · ${path}`,true);
-    pageEl.innerHTML=`<pre>${escapeHtml(String(error?.stack||error))}</pre>`;
-  }
-}
-function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-navForm.addEventListener('submit',e=>{e.preventDefault();dispatch(addressEl.value,{push:true})});
-backButton.addEventListener('click',()=>history.back());
-forwardButton.addEventListener('click',()=>history.forward());
-reloadButton.addEventListener('click',()=>dispatch(appPathFromLocation()));
-window.addEventListener('popstate',()=>dispatch(appPathFromLocation()));
-pageEl.addEventListener('click',e=>{
-  const a=e.target.closest('a[href]');
-  if(!a)return;
-  const url=new URL(a.href,location.href);
-  if(url.origin!==location.origin)return;
-  if(!url.pathname.startsWith(PROJECT_BASE))return;
-  e.preventDefault();
-  let path=url.pathname.slice(PROJECT_BASE.length)||'/';
-  path+=url.search;
-  dispatch(path,{push:true});
-});
-
-try{
-  await boot();
-  const initial=appPathFromLocation();
-  history.replaceState({night:true},'',browserUrl(initial));
-  await dispatch(initial);
-}catch(error){
-  setStatus('Browser Night cold start failed',true);
-  pageEl.innerHTML=`<pre>${escapeHtml(String(error?.stack||error))}</pre>`;
-}
+const $=s=>document.querySelector(s);
+const statusEl=$('#status'),statusDot=$('#status-dot'),pageEl=$('#page'),addressEl=$('#address'),navForm=$('#nav-form'),go=$('#go'),back=$('#back'),forward=$('#forward'),reload=$('#reload'),progress=$('#progress'),runtimePill=$('#runtime-pill'),tabTitle=$('#tab-title'),sidebar=$('#sidebar'),toggleMeta=$('#toggle-meta'),timing=$('#timing');
+let pyodide=null,publicIp=null,ready=false,currentVersion='',coldStartMs=0;
+function appPathFromLocation(){let path=location.pathname;if(path===PROJECT_BASE||path===PROJECT_BASE+'/')path='/';else if(path.startsWith(PROJECT_BASE+'/'))path=path.slice(PROJECT_BASE.length)||'/';return path+location.search}
+function browserUrl(path){if(!path.startsWith('/'))path='/'+path;return PROJECT_BASE+(path==='/'?'/':path)}
+function setStatus(message,error=false){statusEl.textContent=message;statusDot.className=error?'error':'ok';statusDot.style.color=error?'var(--danger)':'var(--ok)'}
+function setLoading(v){progress.classList.toggle('loading',v);if(!v)progress.firstElementChild.style.width='100%';setTimeout(()=>{if(!v)progress.firstElementChild.style.width='0'},180)}
+function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function text(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`Fetch failed: ${url} (${r.status})`);return r.text()}
+async function loadCompatiblePyodide(){const errors=[];for(const version of PYODIDE_VERSIONS){const base=`https://cdn.jsdelivr.net/pyodide/v${version}/full/`;try{setStatus(`Loading Pyodide ${version}…`);runtimePill.textContent=`Pyodide ${version}`;const{loadPyodide}=await import(base+'pyodide.mjs');const runtime=await loadPyodide({indexURL:base});currentVersion=version;return runtime}catch(e){errors.push(`${version}: ${String(e?.message||e)}`)}}throw new Error(errors.join('\n'))}
+async function discoverPublicIp(){if(!globalThis.RTCPeerConnection)return null;const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.cloudflare.com:3478'}]});try{pc.createDataChannel('night-stun');return await new Promise(async resolve=>{let done=false;const finish=v=>{if(!done){done=true;resolve(v)}};const timer=setTimeout(()=>finish(null),3000);pc.onicecandidate=e=>{const c=e.candidate;if(!c){clearTimeout(timer);finish(null);return}if(c.type!=='srflx')return;const a=c.address||c.candidate?.split(' ')[4]||null;if(a){clearTimeout(timer);finish(a)}};await pc.setLocalDescription(await pc.createOffer())})}catch{return null}finally{pc.close()}}
+async function boot(){const t=performance.now();setLoading(true);pyodide=await loadCompatiblePyodide();setStatus('Loading sqlite3…');await pyodide.loadPackage('sqlite3');setStatus('Loading Night runtime…');pyodide.FS.mkdirTree('/night');const[night,web,requestInfo,app]=await Promise.all([text('https://raw.githubusercontent.com/22552/all-night/main/night.py'),text('https://raw.githubusercontent.com/22552/all-night/main/night_web.py'),text('https://raw.githubusercontent.com/22552/all-night/main/night_request_info.py'),text(new URL('app.py',ASSET_BASE))]);pyodide.FS.writeFile('/night/night.py',night);pyodide.FS.writeFile('/night/night_web.py',web);pyodide.FS.writeFile('/night/night_request_info.py',requestInfo);pyodide.FS.writeFile('/night/app.py',app);await pyodide.runPythonAsync(`import sys\nsys.path.insert(0,'/night')\nfrom app import app\nfrom night_web import handle_web`);publicIp=await discoverPublicIp();ready=true;coldStartMs=Math.round(performance.now()-t);runtimePill.textContent=`Pyodide ${currentVersion} · warm`;$('#meta-pyodide').textContent=currentVersion;$('#meta-ip').textContent=publicIp||'unavailable';$('#meta-cold').textContent=`${coldStartMs} ms`;setStatus('Ready');setLoading(false)}
+async function dispatch(path,{push=false,replace=false}={}){if(!ready)return;if(!path.startsWith('/'))path='/'+path;if(push)history.pushState({night:true},'',browserUrl(path));else if(replace)history.replaceState({night:true},'',browserUrl(path));addressEl.value=path;$('#meta-path').textContent=path;$('#meta-method').textContent='GET';tabTitle.textContent=path==='/'?'Night':path;document.title=`${tabTitle.textContent} · Browser Night`;pageEl.innerHTML='<div class="loading-card">Loading route…</div>';setStatus(`GET ${path}`);setLoading(true);const start=performance.now();try{pyodide.globals.set('_url',new URL(path,location.origin).href);pyodide.globals.set('_client_ip',publicIp);const result=await pyodide.runPythonAsync(`\n_info={'platform':'browser'}\nif _client_ip:\n    _info['client_ip']=str(_client_ip)\n_result=await handle_web(app,method='GET',url=_url,headers=[('user-agent','Browser Night / Pyodide')],body=b'',platform_info=_info)\n_result.as_tuple()\n`);const js=result.toJs({create_proxies:false});const statusCode=Number(js[0]);const headers=js[1];const raw=js[2] instanceof Uint8Array?js[2]:new Uint8Array(js[2]);const body=new TextDecoder().decode(raw);const contentType=headers.find(([k])=>String(k).toLowerCase()==='content-type')?.[1]||'';$('#meta-status').textContent=statusCode;$('#meta-type').textContent=contentType||'unknown';if(contentType.includes('text/html'))pageEl.innerHTML=body;else if(contentType.includes('application/json')){try{pageEl.innerHTML=`<pre>${escapeHtml(JSON.stringify(JSON.parse(body),null,2))}</pre>`}catch{pageEl.innerHTML=`<pre>${escapeHtml(body)}</pre>`}}else pageEl.innerHTML=`<pre>${escapeHtml(body)}</pre>`;const elapsed=Math.round(performance.now()-start);timing.textContent=`${elapsed} ms`;setStatus(`Night ${statusCode} · ${path}`);setLoading(false)}catch(error){const elapsed=Math.round(performance.now()-start);timing.textContent=`${elapsed} ms`;$('#meta-status').textContent='ERR';setStatus(`Route failed · ${path}`,true);pageEl.innerHTML=`<pre>${escapeHtml(String(error?.stack||error))}</pre>`;setLoading(false)}}
+navForm.addEventListener('submit',e=>{e.preventDefault();dispatch(addressEl.value,{push:true})});go.addEventListener('click',()=>dispatch(addressEl.value,{push:true}));back.addEventListener('click',()=>history.back());forward.addEventListener('click',()=>history.forward());reload.addEventListener('click',()=>dispatch(appPathFromLocation()));toggleMeta.addEventListener('click',()=>sidebar.classList.toggle('hidden'));window.addEventListener('popstate',()=>dispatch(appPathFromLocation()));pageEl.addEventListener('click',e=>{const a=e.target.closest('a[href]');if(!a)return;const url=new URL(a.href,location.href);if(url.origin!==location.origin||!url.pathname.startsWith(PROJECT_BASE))return;e.preventDefault();let path=url.pathname.slice(PROJECT_BASE.length)||'/';path+=url.search;dispatch(path,{push:true})});
+try{await boot();const initial=appPathFromLocation();history.replaceState({night:true},'',browserUrl(initial));await dispatch(initial)}catch(error){setStatus('Browser Night cold start failed',true);runtimePill.textContent='failed';pageEl.innerHTML=`<pre>${escapeHtml(String(error?.stack||error))}</pre>`;setLoading(false)}
 </script>
