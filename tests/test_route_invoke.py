@@ -76,10 +76,11 @@ def test_middleware_chain_uses_cached_dispatch_path_and_method():
     app = Night()
     seen = []
 
-    @app.middleware
     async def middleware(req, next):
         seen.append((req.method, req.path))
         return await next()
+
+    app.middlewares.append(middleware)
 
     @app.get('/cached/<int:id>')
     def cached(id: int):
