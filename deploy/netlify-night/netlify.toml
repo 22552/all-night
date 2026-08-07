@@ -1,0 +1,18 @@
+[build]
+  command = "npm run prepare"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = ["pyodide"]
+  included_files = ["netlify/functions/_python/**"]
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/night"
+  status = 200
+  force = true
