@@ -48,26 +48,3 @@ Use a strong `secret_key` supplied through the environment when signed sessions,
 Night's signed session data is stored in the client Cookie. Application globals and other in-memory state are process- or isolate-local. Use a shared external store when multiple workers/processes need consistent data.
 
 For Cloudflare Workers, do not store per-request user state in module globals. A warm isolate can handle multiple requests over its lifetime.
-
-## PyPI releases
-
-The current package is **all-night 0.1.1**.
-
-The repository contains a `Publish to PyPI` workflow. Release artifacts are built with `python -m build`, checked with `twine check`, and then uploaded with `pypa/gh-action-pypi-publish`.
-
-Before publishing a new version:
-
-1. update `[project].version` in `pyproject.toml`;
-2. run the full test matrix;
-3. ensure the version does not already exist on PyPI;
-4. create a matching `v*` tag to trigger the normal release workflow;
-5. verify both wheel and source distribution uploads.
-
-Example:
-
-```bash
-git tag v0.1.2
-git push origin v0.1.2
-```
-
-Never commit a PyPI token. The current workflow reads repository/environment credentials through GitHub Actions.
