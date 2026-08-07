@@ -2,13 +2,19 @@
 import asyncio
 import cProfile
 import gc
+from pathlib import Path
 import pstats
 import statistics
+import sys
 import time
+import urllib.parse
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from benchmarks.fast_path import build_night
 from night import Night, TestResponse
-import urllib.parse
 
 
 def bench(fn, n=1000, rounds=5):
