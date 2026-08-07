@@ -2282,13 +2282,15 @@ class Night(Router):
                 return v
         return None
 
-    async def _dispatch(self, req: Request) -> Response:
+    async def _dispatch(self, req: Request, path: str | None = None, method: str | None = None) -> Response:
+        path = req.path if path is None else path
+        method = req.method if method is None else method
         if self.before_hooks:
             early = await self._run_before_hooks(req)
             if early is not None:
                 return early
 
-        direct = self._match_direct_for_dispatch(req.path, req.method)
+        direct = self._match_direct_for_dispatch(path, method)
         if direct is not None:
             route, value = direct
             if route._night_call_kind == ROUTE_CALL_DIRECT_PARAM:
@@ -2306,7 +2308,7 @@ class Night(Router):
                 else:
                     resp = invoke(req, req.path_params)
         else:
-            route, params = self._match_method(req.path, req.method)
+            route, params = self._match_method(path, method)
             req.path_params = params
             invoke = route._night_invoke
             if route._night_invoke_async:
@@ -2348,23 +2350,13 @@ class Night(Router):
         else:
             request_scope = scope
         req = Request(scope=request_scope, receive=receive, send=send, max_body_size=self.max_body_size)
+        method = (request_scope.get("method") or "GET").upper()
+        path = request_scope.get("path") or "/"
         token = _current_request.set(req)
         try:
-
-            async def call_next(i: int = 0) -> Response:
-                if i >= len(self.middlewares):
-                    return await self._dispatch(req)
-
-                mw = self.middlewares[i]
-
-                async def nxt() -> Response:
-                    return await call_next(i + 1)
-
-                return await mw(req, nxt)
-
             # Automatic OPTIONS and HEAD support.
-            if req.method == "OPTIONS":
-                allowed = self._allowed_methods_for_path(req.path)
+            if method == "OPTIONS":
+                allowed = self._allowed_methods_for_path(path)
                 if allowed:
                     allowed_with_opts = set(allowed) | {"OPTIONS"}
                     hdrs = {
@@ -2376,17 +2368,29 @@ class Night(Router):
                 await resp(scope, receive, send)
                 return
 
-            is_head = req.method == "HEAD"
+            is_head = method == "HEAD"
             if is_head:
                 # Treat HEAD as GET for routing; body will be stripped later.
                 req.scope = dict(req.scope)
                 req.scope["method"] = "GET"
+                method = "GET"
 
             try:
                 if self.middlewares:
+                    async def call_next(i: int = 0) -> Response:
+                        if i >= len(self.middlewares):
+                            return await self._dispatch(req, path, method)
+
+                        mw = self.middlewares[i]
+
+                        async def nxt() -> Response:
+                            return await call_next(i + 1)
+
+                        return await mw(req, nxt)
+
                     resp = await call_next(0)
                 else:
-                    resp = await self._dispatch(req)
+                    resp = await self._dispatch(req, path, method)
             except HTTPError as he:
                 handler = self._find_error_handler(he)
                 if handler is not None:
