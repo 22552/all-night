@@ -1,23 +1,24 @@
 ---
 name: all-night
-summary: Build, review, optimize, test, and deploy applications using the Night single-file ASGI framework.
+summary: Build, review, optimize, test, and deploy applications using the Night ASGI framework and its optional MCP/serverless integrations.
 ---
 
 # All-Night / Night
 
-Use this skill when working with the `all-night` PyPI package or the `22552/all-night` repository: creating Night applications, modifying `night.py`, reviewing routing/request/response behavior, benchmarking performance, publishing releases, or deploying Night to Cloudflare Python Workers.
+Use this skill when working with the `all-night` PyPI package or the `22552/all-night` repository: creating Night applications, modifying `night.py`, reviewing routing/request/response behavior, benchmarking performance, publishing releases, exposing MCP tools, or deploying Night to Cloudflare Python Workers and Vercel Functions.
 
 ## Current baseline
 
 - Package: `all-night`
-- Import: `night`
-- Current documented release: `0.1.1`
+- Core import: `night`
+- MCP extension import: `night_mcp`
+- Current documented PyPI release: `0.1.1`
 - Supported Python: `>=3.11`
 - Core architecture: single-file `night.py`
 - Normal CPython core: no required runtime dependencies
 - Application protocol: ASGI
 
-Before changing behavior, read `README.md`, `docs/README.md`, and the relevant reference/guide. Treat `night.py` as the source of truth when documentation and code disagree.
+Before changing behavior, read `README.md`, `docs/README.md`, and the relevant reference/guide. Treat implementation code as the source of truth when documentation and code disagree.
 
 ## Build an application
 
@@ -49,15 +50,16 @@ Return plain `dict`/`list` for JSON, `str` for text, `bytes` for binary content,
 
 Do not add mandatory third-party runtime dependencies to the normal Night core without a compelling reason.
 
-Optional integrations belong behind lazy imports or application-level dependencies. Existing examples include:
+Optional integrations belong behind lazy imports, separate optional modules, or application-level dependencies. Existing examples include:
 
 - ASGI servers such as Uvicorn/Hypercorn
 - `graphql-core`
 - Lua integration
 - Cloudflare `workers-runtime-sdk`
 - optional JSON serializers such as `orjson`
+- `night_mcp`, which is bundled but stays outside the single-file `night.py` core
 
-A feature that only applies to one platform should not make ordinary `import night` require that platform's SDK.
+A feature that only applies to one platform must not make ordinary `import night` require that platform's SDK.
 
 ## Routing and hot-path rules
 
@@ -88,7 +90,7 @@ Do not assume an optimization is faster. Measure it against the same baseline on
 
 `Response` automatically supplies common headers. The Date header uses a one-second cache; do not replace it with per-response datetime formatting.
 
-`JSONResponse` must continue accepting the standard library serializer and alternate serializers that may return `bytes` (for example `orjson.dumps`).
+`JSONResponse` must continue accepting the standard library serializer and alternate serializers that may return `bytes`.
 
 ## TestClient
 
@@ -116,6 +118,46 @@ For performance-sensitive changes:
 
 Profile before making large structural changes. Typical areas to inspect are routing, route invocation, Request construction, middleware/hooks, response coercion, serialization, and adapters.
 
+## MCP 2026-07-28
+
+Read `docs/guides/mcp.md` before changing MCP support.
+
+MCP lives in `night_mcp.py` and exposes Night's existing `app.rpc_methods` registry over an HTTP route.
+
+```python
+from night_mcp import enable_mcp
+
+mcp = enable_mcp(app)
+
+@mcp.tool()
+def add(a: int, b: int):
+    return {"value": a + b}
+```
+
+Existing `@app.rpc("name")` callables must remain visible as MCP tools.
+
+Current MCP scope:
+
+- protocol revision `2026-07-28`;
+- stateless HTTP core;
+- `server/discover`;
+- `tools/list`;
+- `tools/call`;
+- generated input schemas from Python signatures;
+- sync and async tools;
+- cache hints on discovery/list responses.
+
+MCP rules:
+
+- Do not reintroduce the removed protocol-level initialize/session requirement for the 2026-07-28 path.
+- Validate `MCP-Protocol-Version` and mirrored `Mcp-Method` / applicable `Mcp-Name` headers against the JSON-RPC body.
+- Use MCP error code `-32020` for header/body mismatches.
+- Put server identity in response `_meta.io.modelcontextprotocol/serverInfo`.
+- Keep `ttlMs` / `cacheScope` semantics explicit; default to `private` unless sharing is safe.
+- Treat unknown tools and invalid call arguments as protocol errors; tool-body failures should remain tool results with `isError: true`.
+- Do not add the official MCP SDK as a mandatory dependency merely to implement the small transport surface Night already owns.
+- If adding resources, prompts, Tasks, subscriptions, authorization, MRTR, or older protocol revisions, verify the current MCP specification first because the protocol evolves quickly.
+
 ## Cloudflare Python Workers
 
 Read `docs/guides/cloudflare-workers.md` before modifying Cloudflare support.
@@ -136,7 +178,7 @@ Cloudflare-specific rules:
 - Keep deterministic `app = Night()` construction and route registration at module scope.
 - Never place request-specific user state in module globals.
 - Do not perform network/binding I/O during snapshot-oriented module initialization.
-- Use Cloudflare's official `workers-runtime-sdk` conversion layer for RPC values; do not build a competing serializer in Night.
+- Use Cloudflare's official `workers-runtime-sdk` conversion layer for Workers RPC values; do not build a competing serializer in Night.
 - Treat compatibility dates/flags as runtime changes: verify current Cloudflare docs and test the template before updating them.
 - Be careful with request/response buffering because Workers have finite isolate memory.
 
@@ -144,7 +186,7 @@ The repository template is `deploy/cloudflare-night` and its build must stay gre
 
 ## Workers RPC
 
-`@app.rpc("name")` is shared by Night's HTTP JSON-RPC endpoint and `cloudflare_rpc()`.
+`@app.rpc("name")` is shared by Night's HTTP JSON-RPC endpoint, `cloudflare_rpc()`, and the MCP extension.
 
 ```python
 @app.rpc("add")
@@ -153,6 +195,30 @@ def add(a, b):
 ```
 
 For Workers RPC, conversion must remain delegated to `workers.rpc.python_from_rpc` and `workers.rpc.python_to_rpc`.
+
+## Vercel Functions
+
+Read `docs/operations/vercel.md` before changing Vercel support.
+
+Vercel's Python runtime accepts an `app` variable exposing an ASGI application. Therefore Night should normally be deployed directly:
+
+```python
+from night import Night
+
+app = Night()
+```
+
+Vercel rules:
+
+- Do not create a proprietary request/response adapter when standard ASGI already works.
+- Use a recognized Python entrypoint or `[tool.vercel] entrypoint = "..."`.
+- Keep Vercel configuration in deployment templates/docs instead of adding Vercel runtime imports to `night.py`.
+- Declare a Vercel-supported Python version in deployment examples.
+- Keep bundle contents and dependencies small; Python functions bundle reachable project files.
+- Streaming should remain standard ASGI streaming rather than a Night-specific Vercel API.
+- The template under `deploy/vercel-night` must stay importable and its basic routes must pass tests.
+
+MCP on Vercel is just the same Night `/mcp` HTTP route; do not fork the MCP implementation by platform.
 
 ## Validation and compatibility
 
@@ -170,6 +236,8 @@ When changing endpoint call behavior, cover at least:
 - HEAD/OPTIONS behavior
 
 When changing routing, cover method mismatch/405 and regex fallback as well as fast paths.
+
+When changing MCP, cover discover, list, sync call, async call, generated schema, invalid params, unknown tools, and header mismatch.
 
 ## Documentation
 
@@ -197,6 +265,8 @@ Before publishing:
 6. publish through the repository's PyPI workflow;
 7. update README/docs if the documented current release changes.
 
+Ensure all intended `py-modules` are included in the built package; MCP requires both `night` and `night_mcp` after its release.
+
 Never commit PyPI credentials.
 
 ## Completion checklist
@@ -207,4 +277,6 @@ For repository changes, report:
 - tests/CI status;
 - benchmark impact for performance work;
 - Cloudflare template status when relevant;
+- Vercel template status when relevant;
+- MCP protocol coverage when relevant;
 - PR/merge/release state when applicable.

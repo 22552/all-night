@@ -1,4 +1,4 @@
-# Tooling, testing, RPC, and extensions
+# Tooling, testing, RPC, MCP, and extensions
 
 ## CLI
 
@@ -48,6 +48,8 @@ Use `before_request`, `after_request`, and `errorhandler` for lifecycle customiz
 
 `GraphQLExtension` requires the optional `graphql-core` package. Lua-backed features require the optional Lua integration used by the application.
 
+The package also ships `night_mcp.py`, which is dependency-free but intentionally separate from `night.py` so the ASGI core remains a single-file module.
+
 ## JSON-RPC
 
 Register methods with:
@@ -60,6 +62,34 @@ def add(a, b):
 
 Night installs `/rpc` as a JSON-RPC 2.0 POST endpoint when the first method is registered.
 
+## Model Context Protocol
+
+The same RPC registry can be exposed as stateless MCP 2026-07-28 tools:
+
+```python
+from night_mcp import enable_mcp
+
+mcp = enable_mcp(app)
+
+@mcp.tool(description="Multiply two integers")
+def multiply(a: int, b: int):
+    return {"value": a * b}
+```
+
+Existing `@app.rpc(...)` methods are included automatically in `tools/list`.
+
+`night_mcp` currently implements:
+
+- `server/discover`
+- `tools/list`
+- `tools/call`
+- MCP HTTP header/body consistency checks
+- generated tool input schemas from Python signatures
+- sync and async tool calls
+- tool execution errors as `isError` results
+
+See [the MCP guide](../guides/mcp.md) for protocol and deployment details.
+
 ## Cloudflare Workers RPC
 
 Inside Cloudflare Python Workers, the same registry can be exposed through Service Bindings:
@@ -71,6 +101,8 @@ class Default(WorkerEntrypoint):
 ```
 
 The bridge uses `workers.rpc.python_from_rpc()` and `python_to_rpc()` from `workers-runtime-sdk`. Keep Workers-specific code in the Worker entrypoint so normal Night applications remain dependency-free.
+
+The MCP endpoint is independent of Workers RPC: it is an ordinary HTTP route and can therefore run under standard ASGI, Cloudflare Workers, or Vercel Functions.
 
 ## Benchmarks
 
