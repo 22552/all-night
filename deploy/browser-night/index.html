@@ -3,12 +3,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Night in the Browser</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}input,select,textarea,button{font:inherit}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;margin:6px 0 12px;border:1px solid #444;border-radius:8px;background:#181818;color:#fff}textarea{min-height:100px}button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.row{display:grid;grid-template-columns:120px 1fr;gap:10px}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}.meta{background:#181818;padding:10px 14px;border-radius:8px;margin:12px 0 20px}
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}input,select,textarea,button{font:inherit}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;margin:6px 0 12px;border:1px solid #444;border-radius:8px;background:#181818;color:#fff}textarea{min-height:100px}button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.row{display:grid;grid-template-columns:120px 1fr;gap:10px}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}.meta{background:#181818;padding:10px 14px;border-radius:8px;margin:12px 0 20px}.error{color:#ffb4b4}
 </style>
 <h1>Night in the Browser</h1>
 <p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
 <p id="status">Loading Pyodide module…</p>
-<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong><br>Night: <strong id="night-status">waiting…</strong></div>
+<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong><br>Pyodide: <strong id="pyodide-version">loading…</strong><br>Runtime attempts: <strong id="pyodide-attempts">waiting…</strong><br>Night: <strong id="night-status">waiting…</strong><br>Error: <strong id="error-summary">none</strong></div>
 <div class="row">
   <select id="method"><option>GET</option><option>POST</option></select>
   <input id="path" value="/" placeholder="/hello/night">
@@ -30,6 +30,7 @@ const stunIpEl = document.querySelector('#stun-ip');
 const pyodideVersionEl = document.querySelector('#pyodide-version');
 const pyodideAttemptsEl = document.querySelector('#pyodide-attempts');
 const nightStatusEl = document.querySelector('#night-status');
+const errorSummaryEl = document.querySelector('#error-summary');
 let stunPublicIp = null;
 let pyodide;
 let runtimeReady = false;
@@ -38,6 +39,15 @@ async function text(url){
   const r = await fetch(url, {cache:'no-store'});
   if(!r.ok) throw new Error(`Fetch failed: ${url} (${r.status})`);
   return await r.text();
+}
+
+function reportError(error){
+  const full = String(error?.stack || error);
+  console.error('[Browser Night]', error);
+  output.textContent = full;
+  const firstUseful = full.split('\n').find(line => line.trim() && !line.includes('module code@')) || full.split('\n')[0] || 'unknown error';
+  errorSummaryEl.textContent = firstUseful.trim();
+  errorSummaryEl.classList.add('error');
 }
 
 async function loadCompatiblePyodide(){
@@ -131,7 +141,7 @@ sys.path.insert(0, '/night')
 try:
     import night
     'ok'
-except Exception:
+except BaseException:
     traceback.format_exc()
 `);
   if(importReport !== 'ok') throw new Error(`night.py import failed:\n${importReport}`);
@@ -143,7 +153,7 @@ import traceback
 try:
     from app import app
     'ok'
-except Exception:
+except BaseException:
     traceback.format_exc()
 `);
   if(importReport !== 'ok') throw new Error(`app.py import failed:\n${importReport}`);
@@ -156,7 +166,7 @@ try:
     from night_web import handle_web
     from night_request_info import from_scope
     'ok'
-except Exception:
+except BaseException:
     traceback.format_exc()
 `);
   if(importReport !== 'ok') throw new Error(`Night adapter import failed:\n${importReport}`);
@@ -169,7 +179,7 @@ except Exception:
   status.textContent = runtimeReady ? 'Night failed to start' : 'Pyodide failed to start';
   if(!runtimeReady) pyodideVersionEl.textContent = 'failed';
   if(runtimeReady) nightStatusEl.textContent = 'failed ✗';
-  output.textContent = String(e?.stack || e);
+  reportError(e);
 }
 
 run.onclick = async () => {
@@ -205,7 +215,7 @@ _result.as_tuple()
     const raw = js[2] instanceof Uint8Array ? js[2] : new Uint8Array(js[2]);
     output.textContent = `HTTP ${statusCode}\n${headers.map(([k,v])=>`${k}: ${v}`).join('\n')}\n\n${new TextDecoder().decode(raw)}`;
   } catch (e) {
-    output.textContent = String(e?.stack || e);
+    reportError(e);
   } finally {
     run.disabled = false;
   }
