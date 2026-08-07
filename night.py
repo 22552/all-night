@@ -950,6 +950,23 @@ class TestResponse:
 class TestClient:
     def __init__(self, app: "Night"):
         self.app, self.cookies = app, {}
+        self._runner: asyncio.Runner | None = None
+
+    def _run(self, coro):
+        if self._runner is None:
+            self._runner = asyncio.Runner()
+        return self._runner.run(coro)
+
+    def close(self):
+        runner, self._runner = self._runner, None
+        if runner is not None:
+            runner.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
     def request(self, method: str, path: str, *, data: bytes | str | None = None, headers: dict[str, str] | None = None):
         async def run():
@@ -973,7 +990,7 @@ class TestClient:
                     if name: self.cookies[name] = cookie_value
             chunks = [e.get("body", b"") for e in sent if e["type"] == "http.response.body"]
             return TestResponse(start["status"], {k.decode(): v.decode() for k, v in start["headers"]}, b"".join(chunks))
-        return asyncio.run(run())
+        return self._run(run())
 
     def get(self, path, **kwargs): return self.request("GET", path, **kwargs)
     def post(self, path, **kwargs): return self.request("POST", path, **kwargs)
