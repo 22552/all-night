@@ -3,11 +3,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Night in the Browser</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}input,select,textarea,button{font:inherit}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;margin:6px 0 12px;border:1px solid #444;border-radius:8px;background:#181818;color:#fff}textarea{min-height:100px}button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.row{display:grid;grid-template-columns:120px 1fr;gap:10px}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;background:#111;color:#eee}input,select,textarea,button{font:inherit}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;margin:6px 0 12px;border:1px solid #444;border-radius:8px;background:#181818;color:#fff}textarea{min-height:100px}button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.row{display:grid;grid-template-columns:120px 1fr;gap:10px}pre{white-space:pre-wrap;background:#181818;padding:14px;border-radius:8px;min-height:120px}.muted{color:#999}.meta{background:#181818;padding:10px 14px;border-radius:8px;margin:12px 0 20px}
 </style>
 <h1>Night in the Browser</h1>
 <p class="muted">Pyodide + Night. Requests are executed locally in this tab.</p>
 <p id="status">Loading Pyodide…</p>
+<div class="meta">STUN public IP: <strong id="stun-ip">detecting…</strong></div>
 <div class="row">
   <select id="method"><option>GET</option><option>POST</option></select>
   <input id="path" value="/" placeholder="/hello/night">
@@ -24,12 +25,77 @@ const output = document.querySelector('#output');
 const methodEl = document.querySelector('#method');
 const pathEl = document.querySelector('#path');
 const bodyEl = document.querySelector('#body');
+const stunIpEl = document.querySelector('#stun-ip');
+let stunPublicIp = null;
 
 async function text(url){
   const r = await fetch(url);
   if(!r.ok) throw new Error(`${url}: ${r.status}`);
   return await r.text();
 }
+
+function isPublicAddress(address){
+  if(!address) return false;
+  if(address.includes(':')){
+    const value = address.toLowerCase();
+    return !(value === '::1' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd'));
+  }
+  const parts = address.split('.').map(Number);
+  if(parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a,b] = parts;
+  return !(
+    a === 10 || a === 127 || a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+async function detectPublicIp(){
+  if(!('RTCPeerConnection' in globalThis)) return null;
+  const pc = new RTCPeerConnection({
+    iceServers: [{urls: 'stun:stun.cloudflare.com:3478'}],
+  });
+  try{
+    pc.createDataChannel('night-stun');
+    const result = new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if(settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), 5000);
+      pc.addEventListener('icecandidate', event => {
+        const candidate = event.candidate;
+        if(!candidate){
+          clearTimeout(timer);
+          finish(null);
+          return;
+        }
+        if(candidate.type !== 'srflx') return;
+        const address = candidate.address || candidate.candidate?.split(' ')[4] || null;
+        if(isPublicAddress(address)){
+          clearTimeout(timer);
+          finish(address);
+        }
+      });
+    });
+    await pc.setLocalDescription(await pc.createOffer());
+    return await result;
+  }catch{
+    return null;
+  }finally{
+    pc.close();
+  }
+}
+
+const stunPromise = detectPublicIp().then(ip => {
+  stunPublicIp = ip;
+  stunIpEl.textContent = ip || 'unavailable';
+  return ip;
+});
 
 const pyodide = await loadPyodide();
 pyodide.FS.mkdirTree('/night');
@@ -47,6 +113,7 @@ sys.path.insert(0, '/night')
 from app import app
 from night_web import handle_web
 `);
+await stunPromise;
 status.textContent = 'Ready — Night is running locally in your browser.';
 run.disabled = false;
 
@@ -60,14 +127,18 @@ run.onclick = async () => {
     pyodide.globals.set('_method', method);
     pyodide.globals.set('_url', new URL(path, location.href).href);
     pyodide.globals.set('_body', Array.from(body));
+    pyodide.globals.set('_stun_ip', stunPublicIp);
     const result = await pyodide.runPythonAsync(`
+_platform_info = {'platform': 'browser'}
+if _stun_ip:
+    _platform_info['client_ip'] = str(_stun_ip)
 _result = await handle_web(
     app,
     method=_method,
     url=_url,
-    headers=[('content-type', 'text/plain; charset=utf-8')],
+    headers=[('content-type', 'text/plain; charset=utf-8'), ('user-agent', 'Browser Night / Pyodide')],
     body=bytes(_body.to_py()),
-    platform_info={'platform': 'browser'},
+    platform_info=_platform_info,
 )
 _result.as_tuple()
 `);
