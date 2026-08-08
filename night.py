@@ -32,6 +32,7 @@ import contextvars
 import dataclasses
 import datetime as _dt
 import email.utils
+import gzip
 import hashlib
 import hmac
 import inspect
@@ -39,6 +40,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sys
 import tempfile
 import traceback
@@ -504,6 +506,7 @@ class Request:
     scope: dict
     receive: t.Callable
     send: t.Callable
+    app: t.Any = None
 
     _body: bytes | None = None
     _json: t.Any = dataclasses.field(default=None, init=False)
@@ -1188,6 +1191,131 @@ class FileResponse(Response):
         super().__init__(body=data, status=status, headers=h)
 
 
+_GZIP_CACHE_DIR = os.path.join(tempfile.gettempdir(), "night-gzip-cache")
+
+
+def _gzip_cached_file(path: str, level: int = 6) -> tuple[str, str, os.stat_result]:
+    """Return a temp-cached gzip representation for a source file."""
+    level = int(level)
+    if not 0 <= level <= 9:
+        raise ValueError("gzip level must be between 0 and 9")
+
+    source_path = os.path.abspath(os.fspath(path))
+    st = os.stat(source_path)
+    cache_key = hashlib.sha256(
+        f"{source_path}\0{st.st_mtime_ns}\0{st.st_size}\0{level}".encode("utf-8")
+    ).hexdigest()
+    os.makedirs(_GZIP_CACHE_DIR, exist_ok=True)
+    cached_path = os.path.join(_GZIP_CACHE_DIR, cache_key + ".gz")
+    if os.path.isfile(cached_path):
+        return cached_path, cache_key, st
+
+    temp_path = cached_path + f".{os.getpid()}.{time.time_ns()}.tmp"
+    try:
+        with open(source_path, "rb") as src, open(temp_path, "wb") as raw_dst:
+            with gzip.GzipFile(
+                filename="",
+                mode="wb",
+                fileobj=raw_dst,
+                compresslevel=level,
+                mtime=0,
+            ) as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+        os.replace(temp_path, cached_path)
+        try:
+            os.utime(cached_path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        except OSError:
+            pass
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except OSError:
+            pass
+    return cached_path, cache_key, st
+
+
+class FileHandler:
+    """Lazy, chainable file response builder returned by send_file()."""
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        req: Request | None = None,
+        status: int = 200,
+        headers: t.Mapping[str, str] | None = None,
+        download_name: str | None = None,
+        cache_seconds: int | None = 3600,
+    ):
+        self.path = os.fspath(path)
+        self.req = req
+        self.status = int(status)
+        self.headers = dict(headers or {})
+        self.download_name = download_name
+        self.cache_seconds = cache_seconds
+        self._gzip: bool | None = None
+        self._gzip_level: int | None = None
+
+    def gz(self, level: int | None = None):
+        """Serve this file as an HTTP gzip-encoded representation."""
+        if level is not None:
+            level = int(level)
+            if not 0 <= level <= 9:
+                raise ValueError("gzip level must be between 0 and 9")
+        self._gzip = True
+        self._gzip_level = level
+        return self
+
+    def raw(self):
+        """Disable app-level gzip for this file."""
+        self._gzip = False
+        return self
+
+    def _gzip_settings(self, req: Request | None) -> tuple[bool, int]:
+        app = getattr(req, "app", None) if req is not None else None
+        app_enabled = bool(getattr(app, "_file_gzip_enabled", False))
+        app_level = int(getattr(app, "_file_gzip_level", 6))
+        if self._gzip is False:
+            return False, app_level
+        if self._gzip is True:
+            return True, self._gzip_level if self._gzip_level is not None else app_level
+        return app_enabled, app_level
+
+    def response(self, req: Request | None = None) -> FileResponse:
+        req = req or self.req
+        use_gzip, level = self._gzip_settings(req)
+        if not use_gzip:
+            return FileResponse(
+                self.path,
+                req=req,
+                status=self.status,
+                headers=self.headers,
+                download_name=self.download_name,
+                cache_seconds=self.cache_seconds,
+            )
+
+        cached_path, cache_key, st = _gzip_cached_file(self.path, level)
+        h = dict(self.headers)
+        h.setdefault("content-type", _guess_content_type(self.path))
+        h.setdefault("content-encoding", "gzip")
+        h.setdefault("vary", "Accept-Encoding")
+        h.setdefault("etag", f'W/"gz-{cache_key[:16]}"')
+        mtime = _dt.datetime.fromtimestamp(st.st_mtime, tz=_dt.timezone.utc)
+        h.setdefault("last-modified", _http_date(mtime))
+        return FileResponse(
+            cached_path,
+            req=req,
+            status=self.status,
+            headers=h,
+            download_name=self.download_name,
+            cache_seconds=self.cache_seconds,
+        )
+
+    def __call__(self, req: Request | None = None) -> FileResponse:
+        return self.response(req)
+
+
 # ----------------------------
 # Routing
 # ----------------------------
@@ -1533,6 +1661,8 @@ class Night(Router):
         self._static_method_index: dict[str, dict[str, Route]] = {}
         self._static_methods_by_path: dict[str, set[str]] = {}
         self._endpoint_plans: dict[t.Callable, _EndpointPlan] = {}
+        self._file_gzip_enabled = False
+        self._file_gzip_level = 6
         if css: self.enable_css(minify=css_minify)
         self.middlewares: list[Middleware] = []
         self.before_hooks: list[BeforeHook] = []
@@ -1545,6 +1675,15 @@ class Night(Router):
         self._rpc_route_installed = False
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
+
+    def gz(self, level: int = 6):
+        """Enable gzip by default for send_file() and static() responses."""
+        level = int(level)
+        if not 0 <= level <= 9:
+            raise ValueError("gzip level must be between 0 and 9")
+        self._file_gzip_enabled = True
+        self._file_gzip_level = level
+        return self
 
     def test_client(self) -> TestClient:
         return TestClient(self)
@@ -2260,6 +2399,8 @@ class Night(Router):
             raise MethodNotAllowed(allowed)
         raise NotFound()
     def _coerce_response(self, value: t.Any) -> Response:
+        if isinstance(value, FileHandler):
+            return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
             return JSONResponse(value)
@@ -2422,7 +2563,7 @@ class Night(Router):
             request_scope["session_secret"] = self.secret_key
         else:
             request_scope = scope
-        req = Request(scope=request_scope, receive=receive, send=send, max_body_size=self.max_body_size)
+        req = Request(scope=request_scope, receive=receive, send=send, app=self, max_body_size=self.max_body_size)
         method = (request_scope.get("method") or "GET").upper()
         path = request_scope.get("path") or "/"
         token = _current_request.set(req)
@@ -2619,8 +2760,9 @@ def send_file(
     headers: dict[str, str] | None = None,
     download_name: str | None = None,
     cache_seconds: int | None = 3600,
-) -> FileResponse:
-    return FileResponse(
+) -> FileHandler:
+    """Build a lazy file handler that can be returned or registered directly."""
+    return FileHandler(
         path,
         req=req,
         status=status,
@@ -2651,7 +2793,7 @@ def static(
         full = _safe_join(root, path)
         if not os.path.exists(full) or not os.path.isfile(full):
             raise NotFound()
-        return FileResponse(full, req=req, cache_seconds=cache_seconds)
+        return send_file(full, req=req, cache_seconds=cache_seconds)
 
     return r
 
