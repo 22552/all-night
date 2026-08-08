@@ -9,6 +9,30 @@ Midnight は Browser Night の Python と表示中の HTML を双方向につな
 
 `all-night` に `night_midnight` モジュールとして含める設計で、別の `midnight` PyPI パッケージにはしません。
 
+## Nightテンプレート + Midnight
+
+汎用テンプレートの根幹は `night.py` 本体の `TemplateEngine` が担当します。Midnightは別parserを持たず、`MidnightTemplateEngine` がコアEngineを継承してlive bindingだけ追加します。
+
+```python
+from night_midnight import midnight
+
+@app.get("/")
+def home():
+    return midnight.render_template_string("""
+      <h1>${{ title }}</h1>
+      <p>${{ count }}</p>
+      ${% if count > 0 %}<strong>Started</strong>${% endif %}
+    """, title="Night", count=0)
+```
+
+単純な値埋め込みには `data-midnight-bind` が付き、ページ全体を再描画せずPythonから更新できます。
+
+```python
+midnight.set("count", 1)
+```
+
+ファイルテンプレートも `midnight.render_template("page.html", ...)` で同じEngineを使います。構文や拡張方法は[テンプレート](templates.md)を参照してください。
+
 ## HTML → Python
 
 ```python
