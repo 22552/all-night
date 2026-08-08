@@ -84,7 +84,7 @@ jobs:
             for endpoint in static dynamic; do
               if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
               for run in 1 2 3; do
-                oha -n 100k -c 100 --no-tui --output-format json \
+                oha -n 20k -c 100 --no-tui --output-format json \
                   "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
               done
             done
