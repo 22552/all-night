@@ -11,6 +11,7 @@ Night is a single-file ASGI framework for Python 3.11+. The public package is `a
 - [Templates](guides/templates.md) — `${{ ... }}` interpolation, if/for/include, restricted expressions, filters, and extension hooks
 - [Node.js runtime](guides/node.md) — officially supported Node 22/24 hosting through Pyodide and Web-standard Request/Response
 - [Midnight: Python ↔ HTML bridge](guides/midnight.md)
+- [Midnight components + hot reload](guides/midnight-components.md) — scoped reusable UI and stdlib-only WebSocket development reload
 - [Browser Night](guides/browser.md) — run Night inside a browser with Pyodide and persistent runtime caching
 - [Model Context Protocol](guides/mcp.md) — expose Night RPC methods as stateless MCP 2026-07-28 tools
 - [Cloudflare Python Workers](guides/cloudflare-workers.md) — `cloudflare_fetch`, Workers RPC, Service Bindings, KV, and deployment notes
