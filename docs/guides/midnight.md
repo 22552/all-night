@@ -9,6 +9,30 @@ It has two transports:
 
 Midnight is shipped by `all-night` as the `night_midnight` module; it is not a separate `midnight` PyPI distribution.
 
+## Night templates + Midnight
+
+Night's main `night.py` now owns the generic `TemplateEngine`. Midnight does not implement a second parser: `MidnightTemplateEngine` subclasses the core engine and adds live DOM bindings on top.
+
+```python
+from night_midnight import midnight
+
+@app.get("/")
+def home():
+    return midnight.render_template_string("""
+      <h1>${{ title }}</h1>
+      <p>${{ count }}</p>
+      ${% if count > 0 %}<strong>Started</strong>${% endif %}
+    """, title="Night", count=0)
+```
+
+Simple interpolations are emitted with `data-midnight-bind` markers. Python can update those bindings without re-rendering the page:
+
+```python
+midnight.set("count", 1)
+```
+
+File templates use the same engine through `midnight.render_template("page.html", ...)`. See [Templates](templates.md) for the shared syntax and extension model.
+
 ## HTML -> Python
 
 ```python
