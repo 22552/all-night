@@ -84,3 +84,83 @@ def test_python_to_html_helpers_queue_outside_browser():
         "ws_connect",
         "ws_close",
     ]
+
+
+def test_session_context_isolates_state_and_outbox():
+    bridge = Midnight()
+    assert bridge.session_id == "default"
+
+    with bridge.session("alice"):
+        assert bridge.session_id == "alice"
+        bridge.set("count", 1)
+        bridge.text("#who", "Alice")
+        assert bridge.state == {"count": 1}
+
+    assert bridge.session_id == "default"
+
+    with bridge.session("bob"):
+        bridge.set("count", 9)
+        bridge.text("#who", "Bob")
+        assert bridge.state == {"count": 9}
+
+    assert bridge.get_session("alice").state == {"count": 1}
+    assert bridge.get_session("bob").state == {"count": 9}
+
+    with bridge.session("alice"):
+        assert bridge.drain() == [
+            {"op": "bind", "name": "count", "value": 1},
+            {"op": "text", "selector": "#who", "value": "Alice"},
+        ]
+
+    with bridge.session("bob"):
+        assert bridge.drain() == [
+            {"op": "bind", "name": "count", "value": 9},
+            {"op": "text", "selector": "#who", "value": "Bob"},
+        ]
+
+
+def test_dispatch_session_id_survives_async_interleaving():
+    bridge = Midnight()
+
+    @bridge.on_event("identify")
+    async def identify(event):
+        bridge.set("name", event["name"])
+        await asyncio.sleep(0)
+        bridge.text("#name", bridge.state["name"])
+
+    async def run():
+        return await asyncio.gather(
+            bridge.dispatch(
+                {"type": "custom:identify", "selector": None, "name": "Alice"},
+                session_id="alice",
+            ),
+            bridge.dispatch(
+                {"type": "custom:identify", "selector": None, "name": "Bob"},
+                session_id="bob",
+            ),
+        )
+
+    alice, bob = asyncio.run(run())
+
+    assert alice == [
+        {"op": "bind", "name": "name", "value": "Alice"},
+        {"op": "text", "selector": "#name", "value": "Alice"},
+    ]
+    assert bob == [
+        {"op": "bind", "name": "name", "value": "Bob"},
+        {"op": "text", "selector": "#name", "value": "Bob"},
+    ]
+    assert bridge.get_session("alice").state["name"] == "Alice"
+    assert bridge.get_session("bob").state["name"] == "Bob"
+    assert bridge.session_id == "default"
+
+
+def test_drop_session_discards_server_side_state():
+    bridge = Midnight()
+    with bridge.session("temporary"):
+        bridge.set("value", 42)
+
+    assert "temporary" in bridge.session_ids()
+    assert bridge.drop_session("temporary") is True
+    assert "temporary" not in bridge.session_ids()
+    assert bridge.drop_session("temporary") is False
