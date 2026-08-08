@@ -9,7 +9,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -25,16 +25,26 @@ jobs:
       - name: Install oha
         run: cargo install oha --locked
 
+      - name: Versions
+        run: |
+          python --version
+          oha --version
+          python - <<'PY'
+          import importlib.metadata as m
+          for name in ('fastapi', 'uvicorn', 'robyn'):
+              print(name, m.version(name))
+          PY
+
       - name: Create benchmark apps
         run: |
           cat > bench_night.py <<'PY'
           from night import Night
           app = Night()
           @app.get('/')
-          def root():
+          async def root():
               return {'message': 'hello'}
           @app.get('/users/<int:user_id>')
-          def user(user_id: int):
+          async def user(user_id: int):
               return {'id': user_id}
           PY
 
@@ -42,10 +52,10 @@ jobs:
           from fastapi import FastAPI
           app = FastAPI()
           @app.get('/')
-          def root():
+          async def root():
               return {'message': 'hello'}
           @app.get('/users/{user_id}')
-          def user(user_id: int):
+          async def user(user_id: int):
               return {'id': user_id}
           PY
 
@@ -80,11 +90,11 @@ jobs:
           bench() {
             local name="$1" port="$2" pid="$3"
             wait_ready "http://127.0.0.1:${port}/"
-            oha -n 5000 -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            oha -z 2s -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
             for endpoint in static dynamic; do
               if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
               for run in 1 2 3; do
-                oha -n 20k -c 100 --no-tui --output-format json \
+                oha -z 5s -c 100 --no-tui --output-format json \
                   "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
               done
             done
@@ -110,15 +120,15 @@ jobs:
               for endpoint in ('static','dynamic'):
                   vals=[]
                   lats=[]
-                  for f in glob.glob(f'bench-results/{fw}-{endpoint}-*.json'):
+                  for f in sorted(glob.glob(f'bench-results/{fw}-{endpoint}-*.json')):
                       d=json.load(open(f))
                       vals.append(d['summary']['requestsPerSec'])
                       lats.append(d['summary']['average'])
                   rows.append((fw, endpoint, statistics.mean(vals), statistics.mean(lats), vals, lats))
-          print('| framework | route | mean req/s | mean latency (s) | runs req/s |')
+          print('| framework | route | mean req/s | mean latency (ms) | runs req/s |')
           print('|---|---|---:|---:|---|')
           for fw,ep,rps,lat,vals,lats in rows:
-              print(f'| {fw} | {ep} | {rps:.1f} | {lat:.6f} | ' + ', '.join(f'{x:.1f}' for x in vals) + ' |')
+              print(f'| {fw} | {ep} | {rps:.1f} | {lat*1000:.3f} | ' + ', '.join(f'{x:.1f}' for x in vals) + ' |')
           PY
 
       - uses: actions/upload-artifact@v4
