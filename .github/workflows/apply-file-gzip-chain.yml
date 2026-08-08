@@ -186,19 +186,7 @@ jobs:
 
           replace_once(
               "    def test_client(self) -> TestClient:\n        return TestClient(self)\n",
-              dedent('''\
-              def gz(self, level: int = 6):
-                  """Enable gzip by default for send_file() and static() responses."""
-                  level = int(level)
-                  if not 0 <= level <= 9:
-                      raise ValueError("gzip level must be between 0 and 9")
-                  self._file_gzip_enabled = True
-                  self._file_gzip_level = level
-                  return self
-
-              def test_client(self) -> TestClient:
-                  return TestClient(self)
-              ''').replace("\ndef gz", "\n    def gz").replace("\ndef test_client", "\n    def test_client").replace("\n    \"\"\"Enable", "\n        \"\"\"Enable").replace("\n    level =", "\n        level =").replace("\n    if not", "\n        if not").replace("\n        raise", "\n            raise").replace("\n    self._file", "\n        self._file").replace("\n    return self", "\n        return self").replace("\n    return TestClient", "\n        return TestClient"),
+              "    def gz(self, level: int = 6):\n        \"\"\"Enable gzip by default for send_file() and static() responses.\"\"\"\n        level = int(level)\n        if not 0 <= level <= 9:\n            raise ValueError(\"gzip level must be between 0 and 9\")\n        self._file_gzip_enabled = True\n        self._file_gzip_level = level\n        return self\n\n    def test_client(self) -> TestClient:\n        return TestClient(self)\n",
           )
 
           replace_once(
@@ -335,6 +323,8 @@ jobs:
               assert gzip.decompress(open(third, "rb").read()) == b"b" * 4097
           '''))
           PY
+      - name: Compile Night
+        run: python -m py_compile night.py
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
       - name: Run focused tests
