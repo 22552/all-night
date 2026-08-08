@@ -41,11 +41,13 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.util
+          import sys
           import time
           import night as fast
 
           spec = importlib.util.spec_from_file_location('night_base', '/tmp/night_base.py')
           base = importlib.util.module_from_spec(spec)
+          sys.modules['night_base'] = base
           spec.loader.exec_module(base)
 
           def bench(mod, n=200_000):
@@ -72,8 +74,10 @@ jobs:
         run: |
           cat > bench_base.py <<'PY'
           import importlib.util
+          import sys
           spec=importlib.util.spec_from_file_location('night_base','/tmp/night_base.py')
           night_base=importlib.util.module_from_spec(spec)
+          sys.modules['night_base']=night_base
           spec.loader.exec_module(night_base)
           app=night_base.Night()
           @app.get('/')
