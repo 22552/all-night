@@ -11,6 +11,7 @@ import contextlib
 import contextvars
 import html as _html
 import inspect
+import time
 import re
 import json
 import typing as t
@@ -65,15 +66,32 @@ class MidnightSession:
     overwrite each other's data.
     """
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        max_outbox: int = 256,
+        clock: t.Callable[[], float] = time.monotonic,
+    ) -> None:
         self.id = str(session_id)
         self.state: dict[str, t.Any] = {}
         self._outbox: list[dict[str, t.Any]] = []
+        self.max_outbox = max(1, int(max_outbox))
+        self._clock = clock
+        self.last_used = self._clock()
+
+    def touch(self) -> None:
+        self.last_used = self._clock()
 
     def push(self, command: dict[str, t.Any]) -> None:
+        self.touch()
         self._outbox.append(command)
+        overflow = len(self._outbox) - self.max_outbox
+        if overflow > 0:
+            del self._outbox[:overflow]
 
     def drain(self) -> list[dict[str, t.Any]]:
+        self.touch()
         queued, self._outbox = self._outbox, []
         return queued
 
@@ -81,12 +99,23 @@ class MidnightSession:
 class Midnight:
     DEFAULT_SESSION = "default"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_sessions: int = 256,
+        session_ttl: float = 300.0,
+        max_outbox: int = 256,
+        clock: t.Callable[[], float] = time.monotonic,
+    ) -> None:
         self._handlers: dict[tuple[str, str | None], list[Handler]] = {}
         self._ws_handlers: dict[str, list[Handler]] = {}
         self._subscriptions: list[dict[str, t.Any]] = []
         self._subscription_keys: set[tuple[str, str | None, bool]] = set()
         self._sessions: dict[str, MidnightSession] = {}
+        self.max_sessions = max(1, int(max_sessions))
+        self.session_ttl = max(0.0, float(session_ttl))
+        self.max_outbox = max(1, int(max_outbox))
+        self._clock = clock
         self._session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
             f"night_midnight_session_{id(self)}", default=self.DEFAULT_SESSION
         )
@@ -111,12 +140,49 @@ class Midnight:
         """
         return self.current_session.state
 
+    def _prune_sessions(self, *, keep: str | None = None) -> None:
+        now = self._clock()
+        if self.session_ttl > 0:
+            expired = [
+                key
+                for key, session in self._sessions.items()
+                if key != self.DEFAULT_SESSION
+                and key != keep
+                and now - session.last_used > self.session_ttl
+            ]
+            for key in expired:
+                self._sessions.pop(key, None)
+
+        while len(self._sessions) >= self.max_sessions:
+            candidates = [
+                (session.last_used, key)
+                for key, session in self._sessions.items()
+                if key != self.DEFAULT_SESSION and key != keep
+            ]
+            if not candidates:
+                break
+            _, oldest = min(candidates)
+            self._sessions.pop(oldest, None)
+
     def _get_session(self, key: str) -> MidnightSession:
+        key = str(key)
         session = self._sessions.get(key)
         if session is None:
-            session = MidnightSession(key)
+            self._prune_sessions(keep=key)
+            session = MidnightSession(
+                key, max_outbox=self.max_outbox, clock=self._clock
+            )
             self._sessions[key] = session
+        else:
+            session.touch()
+            self._prune_sessions(keep=key)
         return session
+
+    def prune_sessions(self) -> int:
+        """Drop expired/excess non-default sessions and return how many were removed."""
+        before = len(self._sessions)
+        self._prune_sessions(keep=self.session_id)
+        return before - len(self._sessions)
 
     def get_session(
         self, session_id: TrustedSessionId | None = None
