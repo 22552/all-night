@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tag:
@@ -36,11 +37,16 @@ jobs:
               print(tomllib.load(f)['project']['version'])
           PY
           )" = "0.1.2"
-      - name: Push tag
+      - name: Ensure tag
         run: |
+          git fetch --tags --force
           if git rev-parse "refs/tags/v0.1.2" >/dev/null 2>&1; then
             test "$(git rev-parse refs/tags/v0.1.2)" = "0795c5c07935d937ad10eb42365eebeb369b5945"
-            exit 0
+          else
+            git tag v0.1.2 0795c5c07935d937ad10eb42365eebeb369b5945
+            git push origin refs/tags/v0.1.2
           fi
-          git tag v0.1.2 0795c5c07935d937ad10eb42365eebeb369b5945
-          git push origin refs/tags/v0.1.2
+      - name: Dispatch existing PyPI workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run publish.yml --ref v0.1.2
