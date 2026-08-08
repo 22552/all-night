@@ -89,8 +89,6 @@ jobs:
           from night import Night, TemplateEngine
           from fastnight import FastNight, FastTemplateEngine
 
-          # Build Night template delimiters without spelling the GitHub Actions
-          # expression opener in this workflow source.
           E = '$' + '{{'
           T = '$' + '{%'
           TEMPLATE = (
@@ -106,7 +104,7 @@ jobs:
               'items': list(range(10)),
           }
 
-          def measure(fn, repeat=7):
+          def measure(fn, repeat=5):
               values=[]
               for _ in range(repeat):
                   gc.collect()
@@ -119,12 +117,11 @@ jobs:
           fast_engine=FastTemplateEngine()
           normal_template=normal_engine.compile(TEMPLATE)
           fast_template=fast_engine.compile(TEMPLATE)
-
           expected=normal_template.render(CONTEXT)
           actual=fast_template.render(CONTEXT)
           assert actual == expected, (expected, actual)
 
-          N=10000
+          N=3000
           t_normal=measure(lambda: [normal_template.render(CONTEXT) for _ in range(N)])
           t_fast=measure(lambda: [fast_template.render(CONTEXT) for _ in range(N)])
           print('## template render')
@@ -132,7 +129,7 @@ jobs:
           print(f'fastnight: {N/t_fast:.1f} renders/s ({t_fast:.4f}s)')
           print(f'gain: {(t_normal/t_fast-1)*100:+.1f}%')
 
-          ROUTES=500
+          ROUTES=100
           def build_normal():
               app=Night()
               for i in range(ROUTES):
@@ -142,8 +139,8 @@ jobs:
               for i in range(ROUTES):
                   app.get(f'/r{i}/<int:value>')(lambda value: value)
 
-          r_normal=measure(build_normal, repeat=5)
-          r_fast=measure(build_fast, repeat=5)
+          r_normal=measure(build_normal, repeat=3)
+          r_fast=measure(build_fast, repeat=3)
           print('## dynamic route registration')
           print(f'night: {ROUTES/r_normal:.1f} routes/s ({r_normal:.4f}s)')
           print(f'fastnight: {ROUTES/r_fast:.1f} routes/s ({r_fast:.4f}s)')
