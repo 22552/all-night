@@ -9,7 +9,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +23,9 @@ jobs:
           python -m pip install fastapi uvicorn robyn
 
       - name: Install oha
-        run: cargo install oha --locked
+        run: |
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
 
       - name: Versions
         run: |
