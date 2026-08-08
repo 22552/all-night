@@ -23,13 +23,15 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           path = Path("night.py")
           source = path.read_text()
 
           start = source.index("class Router:\n")
           end = source.index("\n\nclass Blueprint(Router):", start)
-          new_router = '''class Router:
+          new_router = dedent('''\
+          class Router:
               """A blueprint-like container for routes."""
 
               def __init__(self):
@@ -118,55 +120,27 @@ jobs:
 
               def purge(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
                   return self._method("PURGE", path, handler, name=name)
-          '''
+          ''')
           source = source[:start] + new_router + source[end:]
 
-          old_keyword = '''        if kind == ROUTE_CALL_REQUEST_KEYWORD:
-              if plan.is_coro:
-                  async def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(await _fn(req=req))
-              else:
-                  def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(_fn(req=req))
-              return invoke
-          '''
-          new_keyword = '''        if kind == ROUTE_CALL_REQUEST_KEYWORD:
-              if plan.is_coro:
-                  async def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(await _fn(req=req, **params))
-              else:
-                  def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(_fn(req=req, **params))
-              return invoke
-          '''
-          if source.count(old_keyword) != 1:
-              raise SystemExit("request-keyword invoker block did not match exactly once")
-          source = source.replace(old_keyword, new_keyword, 1)
+          replacements = (
+              ("return _coerce(await _fn(req=req))", "return _coerce(await _fn(req=req, **params))"),
+              ("return _coerce(_fn(req=req))", "return _coerce(_fn(req=req, **params))"),
+              ("return _coerce(await _fn(req))", "return _coerce(await _fn(req, **params))"),
+              ("return _coerce(_fn(req))", "return _coerce(_fn(req, **params))"),
+          )
+          for old, new in replacements:
+              if old in source:
+                  if source.count(old) != 1:
+                      raise SystemExit(f"ambiguous invoker replacement: {old}")
+                  source = source.replace(old, new, 1)
+              elif new not in source:
+                  raise SystemExit(f"invoker replacement target not found: {old}")
 
-          old_positional = '''        if kind == ROUTE_CALL_REQUEST_POSITIONAL:
-              if plan.is_coro:
-                  async def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(await _fn(req))
-              else:
-                  def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(_fn(req))
-              return invoke
-          '''
-          new_positional = '''        if kind == ROUTE_CALL_REQUEST_POSITIONAL:
-              if plan.is_coro:
-                  async def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(await _fn(req, **params))
-              else:
-                  def invoke(req, params, _fn=fn, _coerce=coerce):
-                      return _coerce(_fn(req, **params))
-              return invoke
-          '''
-          if source.count(old_positional) != 1:
-              raise SystemExit("request-positional invoker block did not match exactly once")
-          source = source.replace(old_positional, new_positional, 1)
           path.write_text(source)
 
-          Path("tests/test_route_registration_styles.py").write_text('''import dataclasses
+          Path("tests/test_route_registration_styles.py").write_text(dedent('''\
+          import dataclasses
           import json
 
           from night import Night, Request
@@ -249,7 +223,7 @@ jobs:
                       "path": "/positional/12",
                       "params": {"user_id": 12},
                   }
-          ''')
+          '''))
           PY
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
