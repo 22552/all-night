@@ -1,8 +1,8 @@
 # All-Night
 
-**Night** is a tiny, single-file ASGI web framework for Python 3.11+.
+**Night** is a tiny, single-file ASGI web framework for Python 3.11+ with portable Web-runtime adapters for browsers, Node.js, and serverless platforms.
 
-It keeps the core dependency-free, supports sync and async handlers, and includes routing, request/response helpers, validation, sessions, testing, realtime APIs, JSON-RPC, OpenAPI, a small SQLite ORM, Cloudflare Python Workers integration, stateless MCP tooling, and Vercel ASGI deployment.
+It keeps the core dependency-free, supports sync and async handlers, and includes routing, request/response helpers, validation, sessions, testing, realtime APIs, JSON-RPC, OpenAPI, a small SQLite ORM, Cloudflare Python Workers integration, stateless MCP tooling, Vercel ASGI deployment, Node.js/Pyodide hosting, and Netlify Functions support.
 
 ```bash
 pip install -U all-night
@@ -45,6 +45,8 @@ night run app.py
 - **MCP 2026-07-28** — the optional `night_mcp` module exposes the existing RPC registry as stateless `server/discover`, `tools/list`, and `tools/call` HTTP endpoints without adding runtime dependencies.
 - **Cloudflare Python Workers** — `Night.cloudflare_fetch()` bridges Workers Requests into Night, while `Night.cloudflare_rpc()` exposes the same `@app.rpc(...)` registry over Workers RPC/Service Bindings. Cloudflare-specific imports stay optional outside Workers.
 - **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; no request/response adapter is needed.
+- **Node.js 22 / 24** — `night_node.mjs` runs the same Night application under Node through Pyodide and Web-standard `Request` / `Response`; both supported Node lines run in CI.
+- **Netlify Functions** — the official Node 24 template uses Netlify's modern `Request -> Response` Functions API and the shared Night Node adapter.
 - **Browser Night** — run Night entirely in a browser tab with Pyodide; a service worker persistently caches versioned Pyodide runtime assets after the first load.
 
 ## MCP
@@ -102,6 +104,32 @@ def index():
 
 A ready-to-copy template lives in [`deploy/vercel-night`](deploy/vercel-night). See the [Vercel deployment guide](docs/operations/vercel.md).
 
+## Node.js
+
+Node.js **22 and 24** are official Night runtime targets. The shared adapter starts Pyodide once per warm Node process, loads Night and your Python application, accepts Web-standard `Request` objects, and returns Web-standard `Response` objects.
+
+```js
+import { createNightNodeHandler } from "./night_node.mjs";
+
+const night = createNightNodeHandler({ sourceDir: "python" });
+const response = await night(new Request("https://night.local/"));
+console.log(response.status, await response.text());
+```
+
+Install the pinned Node dependency with `npm install`. See the [Node.js runtime guide](docs/guides/node.md).
+
+## Netlify Functions
+
+The official Netlify template lives in [`deploy/netlify-night`](deploy/netlify-night) and targets **Node.js 24**. The Function itself is only a thin modern Netlify wrapper around `night_node.mjs`; the build vendors Night's Python sources and the application into the Function bundle.
+
+```bash
+cd deploy/netlify-night
+npm install
+npm run dev
+```
+
+See the [Netlify deployment guide](docs/operations/netlify.md).
+
 ## Browser Night
 
 Night can run entirely in the browser through Pyodide and the `night_web` adapter. No Python server is required: routes execute inside the tab and Web-style requests are bridged into the same Night application.
@@ -121,6 +149,8 @@ The GitHub Pages demo lives under [`deploy/browser-night`](deploy/browser-night)
 - [Documentation index](docs/README.md)
 - [Quickstart](docs/getting-started/quickstart.md)
 - [HTTP guide](docs/guides/http.md)
+- [Node.js runtime](docs/guides/node.md)
+- [Netlify Functions](docs/operations/netlify.md)
 - [Browser Night / Pyodide](docs/guides/browser.md)
 - [MCP](docs/guides/mcp.md)
 - [Cloudflare Workers](docs/guides/cloudflare-workers.md)
@@ -135,4 +165,4 @@ For coding agents and automated tooling, see [`SKILL.md`](SKILL.md).
 
 Current PyPI release: **0.1.2**.
 
-Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
+Node.js and Netlify support described above can be newer on `main` than the current PyPI package. Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
