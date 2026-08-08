@@ -1,0 +1,127 @@
+name: oha benchmark
+
+on:
+  push:
+    branches:
+      - agent/oha-benchmark
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install frameworks
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi uvicorn robyn
+
+      - name: Install oha
+        run: cargo install oha --locked
+
+      - name: Create benchmark apps
+        run: |
+          cat > bench_night.py <<'PY'
+          from night import Night
+          app = Night()
+          @app.get('/')
+          def root():
+              return {'message': 'hello'}
+          @app.get('/users/<int:user_id>')
+          def user(user_id: int):
+              return {'id': user_id}
+          PY
+
+          cat > bench_fastapi.py <<'PY'
+          from fastapi import FastAPI
+          app = FastAPI()
+          @app.get('/')
+          def root():
+              return {'message': 'hello'}
+          @app.get('/users/{user_id}')
+          def user(user_id: int):
+              return {'id': user_id}
+          PY
+
+          cat > bench_robyn.py <<'PY'
+          from robyn import Robyn
+          app = Robyn(__file__)
+          @app.get('/')
+          async def root():
+              return {'message': 'hello'}
+          @app.get('/users/:user_id')
+          async def user(request):
+              return {'id': int(request.path_params['user_id'])}
+          if __name__ == '__main__':
+              app.start(host='127.0.0.1', port=8003)
+          PY
+
+      - name: Run oha benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+
+          wait_ready() {
+            local url="$1"
+            for i in $(seq 1 100); do
+              if curl -fsS "$url" >/dev/null 2>&1; then return 0; fi
+              sleep 0.1
+            done
+            return 1
+          }
+
+          bench() {
+            local name="$1" port="$2" pid="$3"
+            wait_ready "http://127.0.0.1:${port}/"
+            oha -n 5000 -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            for endpoint in static dynamic; do
+              if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
+              for run in 1 2 3; do
+                oha -n 100k -c 100 --no-tui --output-format json \
+                  "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
+              done
+            done
+            kill "$pid" || true
+            wait "$pid" 2>/dev/null || true
+          }
+
+          uvicorn bench_night:app --host 127.0.0.1 --port 8001 --workers 1 --no-access-log >bench-results/night-server.log 2>&1 &
+          bench night 8001 $!
+
+          uvicorn bench_fastapi:app --host 127.0.0.1 --port 8002 --workers 1 --no-access-log >bench-results/fastapi-server.log 2>&1 &
+          bench fastapi 8002 $!
+
+          python bench_robyn.py >bench-results/robyn-server.log 2>&1 &
+          bench robyn 8003 $!
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json, glob, statistics
+          rows=[]
+          for fw in ('night','fastapi','robyn'):
+              for endpoint in ('static','dynamic'):
+                  vals=[]
+                  lats=[]
+                  for f in glob.glob(f'bench-results/{fw}-{endpoint}-*.json'):
+                      d=json.load(open(f))
+                      vals.append(d['summary']['requestsPerSec'])
+                      lats.append(d['summary']['average'])
+                  rows.append((fw, endpoint, statistics.mean(vals), statistics.mean(lats), vals, lats))
+          print('| framework | route | mean req/s | mean latency (s) | runs req/s |')
+          print('|---|---|---:|---:|---|')
+          for fw,ep,rps,lat,vals,lats in rows:
+              print(f'| {fw} | {ep} | {rps:.1f} | {lat:.6f} | ' + ', '.join(f'{x:.1f}' for x in vals) + ' |')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oha-benchmark-results
+          path: bench-results/
