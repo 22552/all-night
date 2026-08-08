@@ -177,6 +177,13 @@
       case "focus":
         document.querySelector(selector)?.focus?.();
         break;
+      case "bind":
+        for (const element of document.querySelectorAll("[data-midnight-bind]")) {
+          if (element.getAttribute("data-midnight-bind") === String(command.name)) {
+            element.textContent = String(command.value ?? "");
+          }
+        }
+        break;
       case "ws_connect":
         connect(command.url, { socketId: command.socket_id, protocols: command.protocols || [] });
         break;
