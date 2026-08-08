@@ -8,6 +8,7 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 
 - [クイックスタート](getting-started/quickstart.md) — PyPI からの導入、CLI / ASGI サーバー、最初のアプリ
 - [HTTPアプリケーション](guides/http.md) — ルーティング、チェーン登録、Request/Response、gzipファイル配信、フォーム、検証
+- [テンプレート](guides/templates.md) — `${{ ... }}`、if/for/include、制限付き式、filter、拡張用TemplateEngine
 - [Node.js runtime](guides/node.md) — Pyodide + Web標準Request/ResponseでNode 22 / 24を公式サポート
 - [Midnight: Python ↔ HTML ブリッジ](guides/midnight.md)
 - [Browser Night](guides/browser.md) — Pyodideでブラウザー内にNightを起動し、runtime assetを永続キャッシュ

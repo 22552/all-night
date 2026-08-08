@@ -7,9 +7,13 @@ queued and can be drained by an adapter.
 
 from __future__ import annotations
 
+import html as _html
 import inspect
+import re
 import json
 import typing as t
+
+from night import HTMLResponse, TemplateEngine
 
 Handler = t.Callable[[dict[str, t.Any]], t.Any]
 
@@ -25,12 +29,29 @@ def _plain(value: t.Any) -> t.Any:
     return value
 
 
+class MidnightTemplateEngine(TemplateEngine):
+    """TemplateEngine extension that turns simple expressions into live bindings."""
+
+    _bindable = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+
+    def render_value(self, expression, value, context, *, autoescape, options):
+        rendered = super().render_value(
+            expression, value, context, autoescape=autoescape, options=options
+        )
+        if not options.get("live") or not self._bindable.fullmatch(expression):
+            return rendered
+        name = _html.escape(expression, quote=True)
+        return f'<span data-midnight-bind="{name}">{rendered}</span>'
+
+
 class Midnight:
     def __init__(self) -> None:
         self._handlers: dict[tuple[str, str | None], list[Handler]] = {}
         self._ws_handlers: dict[str, list[Handler]] = {}
         self._subscriptions: list[dict[str, t.Any]] = []
         self._outbox: list[dict[str, t.Any]] = []
+        self.state: dict[str, t.Any] = {}
+        self.templates = MidnightTemplateEngine()
 
     def on(
         self,
@@ -132,6 +153,27 @@ class Midnight:
     def focus(self, selector: str) -> None:
         self._push("focus", selector=str(selector))
 
+
+    def set(self, name: str, value: t.Any) -> None:
+        """Update a live template binding from Python."""
+        key = str(name)
+        self.state[key] = value
+        self._push("bind", name=key, value=value)
+
+    def render_template_string(self, source: str, **context: t.Any) -> HTMLResponse:
+        data = {**self.state, **context}
+        html = self.templates.render_text(
+            source, data, autoescape=True, render_options={"live": True}
+        )
+        return HTMLResponse(html)
+
+    def render_template(self, filename: str, **context: t.Any) -> HTMLResponse:
+        data = {**self.state, **context}
+        html = self.templates.render_file(
+            filename, data, autoescape=True, render_options={"live": True}
+        )
+        return HTMLResponse(html)
+
     # WebSocket transport ------------------------------------------------
     def ws_connect(
         self,
@@ -203,4 +245,4 @@ class Midnight:
 
 midnight = Midnight()
 
-__all__ = ["Midnight", "midnight"]
+__all__ = ["Midnight", "MidnightTemplateEngine", "midnight"]

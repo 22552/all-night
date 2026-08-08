@@ -8,6 +8,7 @@ Night is a single-file ASGI framework for Python 3.11+. The public package is `a
 
 - [Quickstart](getting-started/quickstart.md) — install from PyPI, run the CLI or an ASGI server, and write a first application
 - [HTTP applications](guides/http.md) — routing, fluent registration, requests, responses, gzip file handlers, forms, validation, cookies, and streaming
+- [Templates](guides/templates.md) — `${{ ... }}` interpolation, if/for/include, restricted expressions, filters, and extension hooks
 - [Node.js runtime](guides/node.md) — officially supported Node 22/24 hosting through Pyodide and Web-standard Request/Response
 - [Midnight: Python ↔ HTML bridge](guides/midnight.md)
 - [Browser Night](guides/browser.md) — run Night inside a browser with Pyodide and persistent runtime caching
