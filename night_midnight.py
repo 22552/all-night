@@ -91,7 +91,7 @@ class Midnight:
             f"night_midnight_session_{id(self)}", default=self.DEFAULT_SESSION
         )
         self.templates = MidnightTemplateEngine()
-        self.get_session(self.DEFAULT_SESSION)
+        self._get_session(self.DEFAULT_SESSION)
 
     @property
     def session_id(self) -> str:
@@ -100,7 +100,7 @@ class Midnight:
 
     @property
     def current_session(self) -> MidnightSession:
-        return self.get_session(self.session_id)
+        return self._get_session(self.session_id)
 
     @property
     def state(self) -> dict[str, t.Any]:
@@ -111,13 +111,19 @@ class Midnight:
         """
         return self.current_session.state
 
-    def get_session(self, session_id: str | None = None) -> MidnightSession:
-        key = self.session_id if session_id is None else str(session_id)
+    def _get_session(self, key: str) -> MidnightSession:
         session = self._sessions.get(key)
         if session is None:
             session = MidnightSession(key)
             self._sessions[key] = session
         return session
+
+    def get_session(
+        self, session_id: TrustedSessionId | None = None
+    ) -> MidnightSession:
+        """Return the current session or an explicitly trusted session."""
+        key = self.session_id if session_id is None else str(session_id)
+        return self._get_session(key)
 
     def session_ids(self) -> tuple[str, ...]:
         return tuple(self._sessions)
@@ -132,7 +138,7 @@ class Midnight:
         server-side session context, never directly from client payload data.
         """
         key = str(session_id)
-        session = self.get_session(key)
+        session = self._get_session(key)
         token = self._session_id.set(key)
         try:
             yield session
@@ -144,7 +150,7 @@ class Midnight:
         key = str(session_id)
         removed = self._sessions.pop(key, None) is not None
         if key == self.DEFAULT_SESSION:
-            self.get_session(self.DEFAULT_SESSION)
+            self._get_session(self.DEFAULT_SESSION)
         return removed
 
     def on(

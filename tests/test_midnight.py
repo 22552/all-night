@@ -144,8 +144,8 @@ def test_session_context_isolates_state_and_outbox():
         bridge.text("#who", "Bob")
         assert bridge.state == {"count": 9}
 
-    assert bridge.get_session("alice").state == {"count": 1}
-    assert bridge.get_session("bob").state == {"count": 9}
+    assert bridge.get_session(alice_id).state == {"count": 1}
+    assert bridge.get_session(bob_id).state == {"count": 9}
 
     with bridge.trusted_session(alice_id):
         assert bridge.drain() == [
@@ -199,8 +199,8 @@ def test_trusted_dispatch_survives_async_interleaving():
         {"op": "bind", "name": "name", "value": "Bob"},
         {"op": "text", "selector": "#name", "value": "Bob"},
     ]
-    assert bridge.get_session("alice").state["name"] == "Alice"
-    assert bridge.get_session("bob").state["name"] == "Bob"
+    assert bridge.get_session(trusted_session_id("alice")).state["name"] == "Alice"
+    assert bridge.get_session(trusted_session_id("bob")).state["name"] == "Bob"
     assert bridge.session_id == "default"
 
 
