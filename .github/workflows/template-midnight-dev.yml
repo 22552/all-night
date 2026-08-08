@@ -1,0 +1,42 @@
+name: Template Midnight development
+
+on:
+  push:
+    branches:
+      - feature/template-midnight
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/template-midnight
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply template engine patch
+        run: python tools/apply_template_engine.py
+      - name: Test template engine and Night
+        run: |
+          python -m pip install -U pytest
+          python -m pytest -q tests
+          python -m py_compile night.py night_midnight.py
+          node --check deploy/browser-night/midnight.js
+      - name: Commit generated changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py night_midnight.py deploy/browser-night/midnight.js
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "Add extensible Night templates and Midnight bindings"
+            git push origin HEAD:feature/template-midnight
+          fi
