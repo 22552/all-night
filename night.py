@@ -932,8 +932,8 @@ class Response:
     ):
         self.status = int(status)
         self.body = _to_bytes(body)
-        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
-        self.raw_headers = list(raw_headers or ())
+        self.headers = {k.lower(): v for k, v in headers.items()} if headers else {}
+        self.raw_headers = list(raw_headers) if raw_headers else []
         if content_type is not None:
             self.headers["content-type"] = content_type
         if "date" not in self.headers:
@@ -942,8 +942,17 @@ class Response:
             self.headers["content-length"] = str(len(self.body))
 
     def asgi_headers(self) -> list[tuple[bytes, bytes]]:
-        normal = [(k, v) for k, v in self.headers.items() if k != "set-cookie"]
-        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in normal + self.raw_headers]
+        encoded = [
+            (k.encode("latin-1"), v.encode("latin-1"))
+            for k, v in self.headers.items()
+            if k != "set-cookie"
+        ]
+        if self.raw_headers:
+            encoded.extend(
+                (k.encode("latin-1"), v.encode("latin-1"))
+                for k, v in self.raw_headers
+            )
+        return encoded
 
     def add_header(self, name: str, value: str):
         self.raw_headers.append((name.lower(), value))
@@ -1129,23 +1138,36 @@ class JSONResponse(Response):
             # not accept json.dumps keyword arguments.
             encoded = dumps(data)
         body = encoded if isinstance(encoded, bytes) else str(encoded).encode("utf-8")
-        h = dict(headers or {})
-        h.setdefault("content-type", "application/json; charset=utf-8")
-        super().__init__(body=body, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "application/json; charset=utf-8")
+            super().__init__(body=body, status=status, headers=h)
+        else:
+            super().__init__(
+                body=body,
+                status=status,
+                content_type="application/json; charset=utf-8",
+            )
 
 
 class PlainTextResponse(Response):
     def __init__(self, text: str, status: int = 200, headers: t.Mapping[str, str] | None = None):
-        h = dict(headers or {})
-        h.setdefault("content-type", "text/plain; charset=utf-8")
-        super().__init__(body=text, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "text/plain; charset=utf-8")
+            super().__init__(body=text, status=status, headers=h)
+        else:
+            super().__init__(body=text, status=status, content_type="text/plain; charset=utf-8")
 
 
 class HTMLResponse(Response):
     def __init__(self, html: str, status: int = 200, headers: t.Mapping[str, str] | None = None):
-        h = dict(headers or {})
-        h.setdefault("content-type", "text/html; charset=utf-8")
-        super().__init__(body=html, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "text/html; charset=utf-8")
+            super().__init__(body=html, status=status, headers=h)
+        else:
+            super().__init__(body=html, status=status, content_type="text/html; charset=utf-8")
 
 
 class TemplateError(ValueError):
