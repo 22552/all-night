@@ -9,6 +9,8 @@ Midnight は Browser Night の Python と表示中の HTML を双方向につな
 
 `all-night` に `night_midnight` モジュールとして含める設計で、別の `midnight` PyPI パッケージにはしません。
 
+通常は `Midnight()` で明示的にインスタンスを作れます。`from night_midnight import midnight` は互換性と手軽さのための**遅延生成proxy**になり、importしただけでは共有状態を即座に生成しません。テストや独立したアプリでは普通に `Midnight()` を複数作れます。必要なら `reset_default_midnight()` で便利インスタンスを差し替えられます。
+
 ## Nightテンプレート + Midnight
 
 汎用テンプレートの根幹は `night.py` 本体の `TemplateEngine` が担当します。Midnightは別parserを持たず、`MidnightTemplateEngine` がコアEngineを継承してlive bindingだけ追加します。
@@ -85,9 +87,11 @@ midnight.on("updated", detail => {
 })
 ```
 
-## 複数ユーザー / サーバーセッション
+Browser Night以外でPyodideの`js`モジュールをimportできない場合だけ、commandは現在sessionのoutboxへfallbackします。`nightMidnightPush()`自体が存在しているのにJS側で例外を投げた場合は、silent failureにせずその例外をそのまま表へ出します。
 
-Browser Nightではブラウザーの各タブがそれぞれ別のPyodide/Python runtimeを持つため、ユーザーは自然に分離されます。一方、通常のCPythonサーバーでは1つの`midnight`を複数クライアントが共有できるため、Midnightは`ContextVar`で選ばれる`MidnightSession`ごとに可変状態を分離します。
+## 複数ユーザー / 信頼境界
+
+Browser Nightではブラウザーの各タブがそれぞれ別のPyodide/Python runtimeを持つため、ユーザーは自然に分離されます。一方、通常のCPythonサーバーでは1つのbridgeを複数クライアントが共有できるため、Midnightは`ContextVar`で選ばれる`MidnightSession`ごとに可変状態を分離します。
 
 イベントhandlerとsubscriptionは全ユーザーで共有し、`midnight.state`、テンプレートbinding、Python→HTMLのoutboxだけがsession-localになります。
 
@@ -99,26 +103,32 @@ async def rename(event):
     midnight.text("#name", midnight.state["name"])
 ```
 
-サーバーadapterはイベントdispatch時に、接続や認証から得た安定したsession/connection IDを渡します。
+クライアント由来payloadを処理するAPIには、意図的に**`session_id`引数がありません**。
 
 ```python
-commands = await midnight.dispatch(
-    event,
-    session_id=trusted_connection_id,
-)
-
-ws_commands = await midnight.dispatch_ws(
-    ws_event,
-    session_id=trusted_connection_id,
-)
+commands = await midnight.dispatch_untrusted(event)
+# midnight.dispatch(event) も同じ安全側APIの互換alias
 ```
+
+共有CPythonサーバーで特定sessionを指定するadapterは、信頼境界をコード上で明示します。
+
+```python
+from night_midnight import trusted_session_id
+
+session_id = trusted_session_id(authenticated_connection.id)
+commands = await midnight.dispatch_trusted(session_id, event)
+
+ws_commands = await midnight.dispatch_ws_trusted(session_id, ws_event)
+```
+
+`TrustedSessionId` は型チェッカー上で通常の `str` と区別でき、さらに `*_trusted` というAPI名でコードレビュー時にも信頼境界が見えます。ただし `trusted_session_id()` は**認証機能ではなく「この値を信頼済みとして扱う」という明示的なassertion**です。任意のブラウザーevent内に入っていたIDをそのまま包んではいけません。サーバー側の認証済みconnection/session情報から導出してください。
 
 session bindingは`await`をまたいでも維持されるため、複数クライアントのasync handlerが同時に動いても別ユーザーのstateへ切り替わりません。
 
-dispatch外から特定ユーザーへ更新を送る場合は明示的にsessionをbindできます。
+dispatch外から信頼済みsessionへ更新を送る場合も、API名で明示します。
 
 ```python
-with midnight.session(user_id):
+with midnight.trusted_session(session_id):
     midnight.set("unread", 3)
     midnight.emit("notification", {"count": 3})
 ```
@@ -128,14 +138,12 @@ with midnight.session(user_id):
 ```python
 midnight.session_id
 midnight.current_session
-midnight.get_session("alice")
+midnight.get_session(session_id)
 midnight.session_ids()
-midnight.drop_session("alice")
+midnight.drop_session(session_id)
 ```
 
-一時的なconnection/sessionが完全に切断され、そのメモリ上stateが不要になったら`drop_session()`で破棄できます。標準のsession storeはprocess-localなので、複数process/複数instance構成では永続・共有すべきアプリ状態は通常のDB/session backendへ保存し、MidnightSessionは接続単位のUI stateとして扱います。
-
-重要: `session_id`はブラウザーから送られてきた任意値をそのまま信用せず、サーバー側の認証済みconnection/session情報から決定してください。
+一時的な認証済みconnection/sessionが完全に切断され、そのメモリ上stateが不要になったら`drop_session()`で破棄できます。標準のsession storeはprocess-localなので、複数process/複数instance構成では永続・共有すべきアプリ状態は通常のDB/session backendへ保存し、MidnightSessionは接続単位のUI stateとして扱います。
 
 ## WebSocket
 
@@ -169,7 +177,8 @@ WebSocket event ┘                                  │
 HTML DOM / CustomEvent / WebSocket
 
 共有CPythonサーバー:
-connection/session ID -> ContextVar -> MidnightSession -> state + outbox
+認証済みconnection ID -> TrustedSessionId -> ContextVar
+                      -> MidnightSession -> state + outbox
 ```
 
 同じブラウザータブ内のPythonとHTMLの通信には軽いdirect bridgeを使い、WebSocketは外部との双方向通信が必要な場合だけ使う構成です。

@@ -1,7 +1,16 @@
 import asyncio
 import json
+import sys
+import types
 
-from night_midnight import Midnight
+import pytest
+
+from night_midnight import (
+    Midnight,
+    get_default_midnight,
+    reset_default_midnight,
+    trusted_session_id,
+)
 
 
 def test_dom_subscription_and_dispatch():
@@ -28,6 +37,22 @@ def test_dom_subscription_and_dispatch():
     )
     assert seen == ["save"]
     assert commands == [{"op": "text", "selector": "#status", "value": "saved"}]
+
+
+def test_subscription_dedup_uses_keyed_index():
+    bridge = Midnight()
+
+    @bridge.on("click", "#same", prevent_default=True)
+    def first(event):
+        pass
+
+    @bridge.on("click", "#same", prevent_default=True)
+    def second(event):
+        pass
+
+    assert bridge.subscriptions() == [
+        {"event": "click", "selector": "#same", "prevent_default": True}
+    ]
 
 
 def test_custom_event_and_async_handler():
@@ -86,11 +111,27 @@ def test_python_to_html_helpers_queue_outside_browser():
     ]
 
 
+def test_browser_bridge_exceptions_are_not_silenced(monkeypatch):
+    bridge = Midnight()
+    fake_js = types.ModuleType("js")
+
+    def broken_push(payload):
+        raise RuntimeError("broken JS bridge")
+
+    fake_js.nightMidnightPush = broken_push
+    monkeypatch.setitem(sys.modules, "js", fake_js)
+
+    with pytest.raises(RuntimeError, match="broken JS bridge"):
+        bridge.text("#status", "boom")
+
+
 def test_session_context_isolates_state_and_outbox():
     bridge = Midnight()
+    alice_id = trusted_session_id("alice")
+    bob_id = trusted_session_id("bob")
     assert bridge.session_id == "default"
 
-    with bridge.session("alice"):
+    with bridge.trusted_session(alice_id):
         assert bridge.session_id == "alice"
         bridge.set("count", 1)
         bridge.text("#who", "Alice")
@@ -98,7 +139,7 @@ def test_session_context_isolates_state_and_outbox():
 
     assert bridge.session_id == "default"
 
-    with bridge.session("bob"):
+    with bridge.trusted_session(bob_id):
         bridge.set("count", 9)
         bridge.text("#who", "Bob")
         assert bridge.state == {"count": 9}
@@ -106,20 +147,28 @@ def test_session_context_isolates_state_and_outbox():
     assert bridge.get_session("alice").state == {"count": 1}
     assert bridge.get_session("bob").state == {"count": 9}
 
-    with bridge.session("alice"):
+    with bridge.trusted_session(alice_id):
         assert bridge.drain() == [
             {"op": "bind", "name": "count", "value": 1},
             {"op": "text", "selector": "#who", "value": "Alice"},
         ]
 
-    with bridge.session("bob"):
+    with bridge.trusted_session(bob_id):
         assert bridge.drain() == [
             {"op": "bind", "name": "count", "value": 9},
             {"op": "text", "selector": "#who", "value": "Bob"},
         ]
 
 
-def test_dispatch_session_id_survives_async_interleaving():
+def test_untrusted_dispatch_cannot_choose_session_id():
+    bridge = Midnight()
+    event = {"type": "custom:none", "selector": None}
+
+    with pytest.raises(TypeError):
+        asyncio.run(bridge.dispatch(event, session_id="victim"))
+
+
+def test_trusted_dispatch_survives_async_interleaving():
     bridge = Midnight()
 
     @bridge.on_event("identify")
@@ -130,13 +179,13 @@ def test_dispatch_session_id_survives_async_interleaving():
 
     async def run():
         return await asyncio.gather(
-            bridge.dispatch(
+            bridge.dispatch_trusted(
+                trusted_session_id("alice"),
                 {"type": "custom:identify", "selector": None, "name": "Alice"},
-                session_id="alice",
             ),
-            bridge.dispatch(
+            bridge.dispatch_trusted(
+                trusted_session_id("bob"),
                 {"type": "custom:identify", "selector": None, "name": "Bob"},
-                session_id="bob",
             ),
         )
 
@@ -157,10 +206,20 @@ def test_dispatch_session_id_survives_async_interleaving():
 
 def test_drop_session_discards_server_side_state():
     bridge = Midnight()
-    with bridge.session("temporary"):
+    session_id = trusted_session_id("temporary")
+    with bridge.trusted_session(session_id):
         bridge.set("value", 42)
 
     assert "temporary" in bridge.session_ids()
-    assert bridge.drop_session("temporary") is True
+    assert bridge.drop_session(session_id) is True
     assert "temporary" not in bridge.session_ids()
-    assert bridge.drop_session("temporary") is False
+    assert bridge.drop_session(session_id) is False
+
+
+def test_default_midnight_is_lazy_resettable_convenience_instance():
+    first = reset_default_midnight()
+    assert get_default_midnight() is first
+
+    second = reset_default_midnight()
+    assert second is not first
+    assert get_default_midnight() is second

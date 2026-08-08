@@ -18,6 +18,17 @@ import typing as t
 from night import HTMLResponse, TemplateEngine
 
 Handler = t.Callable[[dict[str, t.Any]], t.Any]
+TrustedSessionId = t.NewType("TrustedSessionId", str)
+
+
+def trusted_session_id(value: str) -> TrustedSessionId:
+    """Explicitly mark an adapter-derived identifier as trusted.
+
+    This function does not authenticate input. Its purpose is to make the trust
+    elevation visible at the adapter boundary and to give type checkers a
+    distinct type for APIs that may address another client's session.
+    """
+    return TrustedSessionId(str(value))
 
 
 def _plain(value: t.Any) -> t.Any:
@@ -74,6 +85,7 @@ class Midnight:
         self._handlers: dict[tuple[str, str | None], list[Handler]] = {}
         self._ws_handlers: dict[str, list[Handler]] = {}
         self._subscriptions: list[dict[str, t.Any]] = []
+        self._subscription_keys: set[tuple[str, str | None, bool]] = set()
         self._sessions: dict[str, MidnightSession] = {}
         self._session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
             f"night_midnight_session_{id(self)}", default=self.DEFAULT_SESSION
@@ -111,11 +123,13 @@ class Midnight:
         return tuple(self._sessions)
 
     @contextlib.contextmanager
-    def session(self, session_id: str):
-        """Temporarily bind Midnight operations to one client/session.
+    def trusted_session(self, session_id: TrustedSessionId):
+        """Bind operations to one adapter-authenticated client/session.
 
-        ``ContextVar`` keeps this binding isolated across concurrent asyncio
-        tasks and restores the previous session when the context exits.
+        ``ContextVar`` keeps the binding isolated across concurrent asyncio
+        tasks and restores the previous session when the context exits. Callers
+        should create ``TrustedSessionId`` only from authenticated connection or
+        server-side session context, never directly from client payload data.
         """
         key = str(session_id)
         session = self.get_session(key)
@@ -125,10 +139,8 @@ class Midnight:
         finally:
             self._session_id.reset(token)
 
-    session_scope = session
-
-    def drop_session(self, session_id: str) -> bool:
-        """Forget one server-side session and its queued commands/state."""
+    def drop_session(self, session_id: TrustedSessionId) -> bool:
+        """Forget one trusted server-side session and its queued state."""
         key = str(session_id)
         removed = self._sessions.pop(key, None) is not None
         if key == self.DEFAULT_SESSION:
@@ -157,13 +169,16 @@ class Midnight:
         def decorator(fn: Handler) -> Handler:
             self._handlers.setdefault((event, selector), []).append(fn)
             if not event.startswith("custom:"):
-                item = {
-                    "event": event,
-                    "selector": selector,
-                    "prevent_default": bool(prevent_default),
-                }
-                if item not in self._subscriptions:
-                    self._subscriptions.append(item)
+                key = (event, selector, bool(prevent_default))
+                if key not in self._subscription_keys:
+                    self._subscription_keys.add(key)
+                    self._subscriptions.append(
+                        {
+                            "event": event,
+                            "selector": selector,
+                            "prevent_default": bool(prevent_default),
+                        }
+                    )
             return fn
 
         return decorator
@@ -189,14 +204,14 @@ class Midnight:
     def _browser_push(self, command: dict[str, t.Any]) -> bool:
         try:
             from js import nightMidnightPush  # type: ignore
-
-            return bool(
-                nightMidnightPush(
-                    json.dumps(command, separators=(",", ":"), default=str)
-                )
-            )
-        except Exception:
+        except ImportError:
             return False
+
+        return bool(
+            nightMidnightPush(
+                json.dumps(command, separators=(",", ":"), default=str)
+            )
+        )
 
     def _push(self, op: str, **payload: t.Any) -> None:
         command = {"op": op, **payload}
@@ -308,21 +323,24 @@ class Midnight:
         await self._run_handlers(handlers, payload)
         return self.drain()
 
-    async def dispatch(
-        self,
-        payload: dict[str, t.Any],
-        *,
-        session_id: str | None = None,
-    ) -> list[dict[str, t.Any]]:
-        """Dispatch one HTML event, optionally scoped to a server-side client.
+    async def dispatch_untrusted(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+        """Dispatch browser/client payload only within the current session.
 
-        A server adapter should derive ``session_id`` from its trusted
-        connection/session context instead of accepting an arbitrary client
-        supplied value.
+        This method deliberately has no ``session_id`` parameter, so client data
+        cannot choose another server-side Midnight session through this API.
+        Browser Night normally uses the default per-runtime session here.
         """
-        if session_id is None:
-            return await self._dispatch_current(payload)
-        with self.session(session_id):
+        return await self._dispatch_current(payload)
+
+    dispatch = dispatch_untrusted
+
+    async def dispatch_trusted(
+        self,
+        session_id: TrustedSessionId,
+        payload: dict[str, t.Any],
+    ) -> list[dict[str, t.Any]]:
+        """Dispatch payload into an adapter-authenticated server-side session."""
+        with self.trusted_session(session_id):
             return await self._dispatch_current(payload)
 
     async def _dispatch_ws_current(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
@@ -331,26 +349,79 @@ class Midnight:
         await self._run_handlers(list(self._ws_handlers.get(event, ())), payload)
         return self.drain()
 
-    async def dispatch_ws(
+    async def dispatch_ws_untrusted(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+        return await self._dispatch_ws_current(payload)
+
+    dispatch_ws = dispatch_ws_untrusted
+
+    async def dispatch_ws_trusted(
         self,
+        session_id: TrustedSessionId,
         payload: dict[str, t.Any],
-        *,
-        session_id: str | None = None,
     ) -> list[dict[str, t.Any]]:
-        if session_id is None:
-            return await self._dispatch_ws_current(payload)
-        with self.session(session_id):
+        with self.trusted_session(session_id):
             return await self._dispatch_ws_current(payload)
 
-    async def dispatch_json(self, payload: str, *, session_id: str | None = None) -> str:
-        commands = await self.dispatch(json.loads(str(payload)), session_id=session_id)
+    async def dispatch_json(self, payload: str) -> str:
+        commands = await self.dispatch_untrusted(json.loads(str(payload)))
         return json.dumps(commands, separators=(",", ":"), default=str)
 
-    async def dispatch_ws_json(self, payload: str, *, session_id: str | None = None) -> str:
-        commands = await self.dispatch_ws(json.loads(str(payload)), session_id=session_id)
+    async def dispatch_json_trusted(self, session_id: TrustedSessionId, payload: str) -> str:
+        commands = await self.dispatch_trusted(session_id, json.loads(str(payload)))
+        return json.dumps(commands, separators=(",", ":"), default=str)
+
+    async def dispatch_ws_json(self, payload: str) -> str:
+        commands = await self.dispatch_ws_untrusted(json.loads(str(payload)))
+        return json.dumps(commands, separators=(",", ":"), default=str)
+
+    async def dispatch_ws_json_trusted(
+        self, session_id: TrustedSessionId, payload: str
+    ) -> str:
+        commands = await self.dispatch_ws_trusted(session_id, json.loads(str(payload)))
         return json.dumps(commands, separators=(",", ":"), default=str)
 
 
-midnight = Midnight()
+_default_midnight: Midnight | None = None
 
-__all__ = ["Midnight", "MidnightSession", "MidnightTemplateEngine", "midnight"]
+
+def get_default_midnight() -> Midnight:
+    """Return the lazily-created convenience Midnight instance."""
+    global _default_midnight
+    if _default_midnight is None:
+        _default_midnight = Midnight()
+    return _default_midnight
+
+
+def reset_default_midnight() -> Midnight:
+    """Replace the convenience instance, primarily for tests/dev reloads."""
+    global _default_midnight
+    _default_midnight = Midnight()
+    return _default_midnight
+
+
+class _DefaultMidnightProxy:
+    """Lazy compatibility proxy for ``from night_midnight import midnight``."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str) -> t.Any:
+        return getattr(get_default_midnight(), name)
+
+    def __repr__(self) -> str:
+        if _default_midnight is None:
+            return "<midnight lazy>"
+        return repr(_default_midnight)
+
+
+midnight: Midnight = t.cast(Midnight, _DefaultMidnightProxy())
+
+__all__ = [
+    "Midnight",
+    "MidnightSession",
+    "MidnightTemplateEngine",
+    "TrustedSessionId",
+    "trusted_session_id",
+    "get_default_midnight",
+    "reset_default_midnight",
+    "midnight",
+]

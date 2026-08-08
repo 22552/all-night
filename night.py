@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
-"""night.py - a tiny, single-file Flask-like ASGI web framework.
+"""night.py - Night's dependency-free Python web framework core.
 
-This module intentionally evolves over time.
+Night is centered on a runtime-independent Request -> Response core. Normal
+CPython is the primary implementation environment; adapters can expose the same
+application through ASGI, WSGI, Cloudflare Python Workers, Browser/Pyodide,
+Node/Pyodide, Netlify, and other platform-native request/response interfaces.
 
-Goals
-- Single file.
-- Flask-ish decorator routing.
-- ASGI 3.0 app callable.
-- Minimal but practical: request/response, query, path params, JSON, middleware.
+Design goals
+- Keep the dependency-free core in one importable ``night.py`` file.
+- Provide Flask-like routing ergonomics without making ASGI or WSGI the core abstraction.
+- Keep routing and request dispatch fast with indexed static/dynamic paths and specialized invokers.
+- Include practical core features such as request/response helpers, templates, files, sessions,
+  middleware/hooks, RPC/SSE/WebSocket helpers, and extension points.
+- Keep platform integration at adapter boundaries so the core stays portable.
 
-This revision adds:
-- Query params parsing and cookie parsing.
-- URL generation (url_for) and named routes.
-- Before/after request hooks.
-- Error handlers (@app.errorhandler).
-- Streaming responses.
-- Static files helper with safe path join.
-- Blueprint-like router mounting via app.mount(prefix, router).
-- Request.state (dict-like) and app.state for shared state.
-- Request.client, Request.url, and robust header access.
-- 304 / ETag / If-Modified-Since for FileResponse.
-- HEAD support (auto) and OPTIONS auto-response.
-
-Dependencies: none (optional uvicorn for running).
+Optional features may use optional dependencies; the normal CPython core has no
+required third-party runtime dependency.
 """
 
 from __future__ import annotations
