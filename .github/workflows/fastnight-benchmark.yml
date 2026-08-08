@@ -1,0 +1,105 @@
+name: FastNight benchmark
+
+on:
+  push:
+    branches:
+      - fastNight
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install runtime
+        run: |
+          python -m pip install uvicorn
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+
+      - name: Create benchmark apps
+        run: |
+          cat > bench_night.py <<'PY'
+          from night import Night
+          app = Night()
+          @app.get('/')
+          async def root():
+              return {'message': 'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id: int):
+              return {'id': user_id}
+          PY
+
+          cat > bench_fastnight.py <<'PY'
+          from fastnight import FastNight
+          app = FastNight()
+          @app.get('/')
+          async def root():
+              return {'message': 'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id: int):
+              return {'id': user_id}
+          PY
+
+      - name: Run benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+
+          wait_ready() {
+            local url="$1"
+            for i in $(seq 1 100); do
+              if curl -fsS "$url" >/dev/null 2>&1; then return 0; fi
+              sleep 0.1
+            done
+            return 1
+          }
+
+          bench() {
+            local name="$1" module="$2" port="$3"
+            uvicorn "$module:app" --host 127.0.0.1 --port "$port" --workers 1 --no-access-log >"bench-results/${name}-server.log" 2>&1 &
+            local pid=$!
+            wait_ready "http://127.0.0.1:${port}/"
+            timeout 10s oha -n 200 -c 25 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            for endpoint in static dynamic; do
+              if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
+              for run in 1 2 3; do
+                timeout 10s oha -n 2000 -c 50 --no-tui --output-format json \
+                  "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
+              done
+            done
+            kill -9 "$pid" 2>/dev/null || true
+          }
+
+          bench night bench_night 8011
+          bench fastnight bench_fastnight 8012
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import glob, json, statistics
+          for endpoint in ('static', 'dynamic'):
+              print(f'## {endpoint}')
+              values = {}
+              for fw in ('night', 'fastnight'):
+                  rps=[]; lat=[]
+                  for f in sorted(glob.glob(f'bench-results/{fw}-{endpoint}-*.json')):
+                      d=json.load(open(f))
+                      rps.append(d['summary']['requestsPerSec'])
+                      lat.append(d['summary']['average'] * 1000)
+                  values[fw]=(statistics.mean(rps), statistics.mean(lat), rps)
+                  print(f"{fw}: {values[fw][0]:.1f} req/s, {values[fw][1]:.3f} ms; runs=" + ', '.join(f'{x:.1f}' for x in rps))
+              gain=(values['fastnight'][0]/values['night'][0]-1)*100
+              print(f'gain: {gain:+.1f}%')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastnight-benchmark-results
+          path: bench-results/
