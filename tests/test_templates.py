@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from night import (
+    HTTPError,
     Night,
     SafeString,
     TemplateEngine,
@@ -57,7 +58,7 @@ def test_template_include_and_cache_refresh(tmp_path: Path):
 
 def test_template_file_path_is_confined(tmp_path: Path):
     engine = TemplateEngine(str(tmp_path))
-    with pytest.raises(TemplateError):
+    with pytest.raises(HTTPError):
         engine.render_file("../outside.html")
 
 
