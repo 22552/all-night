@@ -132,7 +132,7 @@ See the [Netlify deployment guide](docs/operations/netlify.md).
 
 ## Midnight
 
-Browser Night includes **Midnight**, a bidirectional Python ↔ HTML bridge for DOM events, structured DOM updates, custom events, and optional WebSocket transport. See `docs/guides/midnight.md`.
+Browser Night includes **Midnight**, a bidirectional Python ↔ HTML bridge for DOM events, structured DOM updates, custom events, forms, reusable components, and optional WebSocket transport. See the [Midnight guide](docs/guides/midnight.md).
 
 ## Browser Night
 
@@ -146,27 +146,40 @@ app.get("/hello", lambda: {"hello": "browser"})
 app.get("/data", send_file("data.json"))
 ```
 
-The GitHub Pages demo lives under [`deploy/browser-night`](deploy/browser-night). Its service worker caches only versioned Pyodide CDN assets (`.mjs`, `.wasm`, package metadata, and packages such as `sqlite3`) in Cache Storage, so later starts can reuse the runtime without freezing Night's own source updates. See the [Browser Night guide](docs/guides/browser.md).
+The GitHub Pages demo lives under [`deploy/browser-night`](deploy/browser-night). Its service worker caches versioned Pyodide runtime assets so later starts can reuse the runtime without freezing Night's own source updates. See the [Browser Night guide](docs/guides/browser.md).
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Quickstart](docs/getting-started/quickstart.md)
-- [HTTP guide](docs/guides/http.md)
-- [Node.js runtime](docs/guides/node.md)
-- [Netlify Functions](docs/operations/netlify.md)
+Start with the **[documentation index](docs/README.md)**. It now contains a feature map, runtime/deployment matrix, and links to the main guides and reference pages.
+
+Recommended reading order:
+
+1. [Quickstart](docs/getting-started/quickstart.md)
+2. [HTTP guide](docs/guides/http.md)
+3. [Application and routing reference](docs/reference/application.md)
+4. [Request / Response reference](docs/reference/request-response.md)
+5. [Tooling and CLI](docs/reference/tooling.md)
+6. [Deployment](docs/operations/deployment.md)
+
+Additional guides:
+
+- [Templates](docs/guides/templates.md)
+- [Realtime / WebSocket / SSE](docs/guides/realtime.md)
+- [Midnight](docs/guides/midnight.md)
 - [Browser Night / Pyodide](docs/guides/browser.md)
+- [Node.js runtime](docs/guides/node.md)
 - [MCP](docs/guides/mcp.md)
 - [Cloudflare Workers](docs/guides/cloudflare-workers.md)
 - [Vercel Functions](docs/operations/vercel.md)
-- [Deployment](docs/operations/deployment.md)
-- [API reference](docs/reference/application.md)
+- [Netlify Functions](docs/operations/netlify.md)
 - [日本語ドキュメント](docs/ja/README.md)
+
+> The repository's current GitHub Pages workflow publishes the **Browser Night demo**. The Markdown documentation itself lives under `docs/` in the repository.
 
 For coding agents and automated tooling, see [`SKILL.md`](SKILL.md).
 
 ## Version
 
-Current PyPI release: **0.1.2**.
+Current PyPI release: **0.1.4**. Night requires Python **3.11+**.
 
-Node.js and Netlify support described above can be newer on `main` than the current PyPI package. Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
+Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
