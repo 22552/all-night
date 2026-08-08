@@ -40,4 +40,12 @@ test = Path("tests/test_midnight.py")
 t = test.read_text(encoding="utf-8")
 t = t.replace('bridge.get_session("alice")', 'bridge.get_session(alice_id)')
 t = t.replace('bridge.get_session("bob")', 'bridge.get_session(bob_id)')
+t = t.replace(
+    'bridge.get_session(alice_id).state["name"] == "Alice"',
+    'bridge.get_session(trusted_session_id("alice")).state["name"] == "Alice"',
+)
+t = t.replace(
+    'bridge.get_session(bob_id).state["name"] == "Bob"',
+    'bridge.get_session(trusted_session_id("bob")).state["name"] == "Bob"',
+)
 test.write_text(t, encoding="utf-8")
