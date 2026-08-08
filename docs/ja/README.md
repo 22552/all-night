@@ -8,6 +8,7 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 
 - [クイックスタート](getting-started/quickstart.md) — PyPI からの導入、CLI / ASGI サーバー、最初のアプリ
 - [HTTPアプリケーション](guides/http.md) — ルーティング、チェーン登録、Request/Response、gzipファイル配信、フォーム、検証
+- [Node.js runtime](guides/node.md) — Pyodide + Web標準Request/ResponseでNode 22 / 24を公式サポート
 - [Browser Night](guides/browser.md) — Pyodideでブラウザー内にNightを起動し、runtime assetを永続キャッシュ
 - [Model Context Protocol](guides/mcp.md) — Night RPCをstateless MCP 2026-07-28 toolとして公開
 - [Cloudflare Python Workers](guides/cloudflare-workers.md) — `cloudflare_fetch`、Workers RPC、Service Binding、KV、Edge運用
@@ -22,6 +23,7 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 - [CLI・テスト・拡張](reference/tooling.md)
 - [デプロイ](operations/deployment.md)
 - [Vercel Functions](operations/vercel.md)
+- [Netlify Functions](operations/netlify.md)
 
 ## 設計
 
@@ -29,12 +31,16 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 
 ルーティングは登録時にできるだけ前処理されます。静的ルートのindex化、典型的な動的ルートのspecialize、endpointのcall shape分類、route固有invokerの生成を行い、request時の分岐や線形探索を減らしています。
 
+portable Web runtimeではtransport固有処理をrouting coreの外へ置きます。Node / Netlifyは `night_node.mjs` + Pyodide + `night_web`、Browser Nightはタブ内から同じ `night_web` bridgeを利用します。
+
 ## Serverless / Edge
 
 - **Cloudflare Python Workers** — Workers Request/Response bridgeとWorkers RPCに対応。
 - **Vercel Functions** — Vercel Python runtimeからNightのASGI `app`を直接実行可能。
+- **Node.js 22 / 24** — `night_node.mjs` + Pyodideを両Node lineでCI実行する公式runtime。
+- **Netlify Functions / Node 24** — modern Request/Response Function wrapperを公式CI対象にし、`deploy/netlify-night` にtemplateを用意。
 - **Browser / Pyodide** — `night_web`を介して同じNight appをタブ内で実行。version付きPyodide assetはService Workerで再利用します。
-- **MCP** — 通常のNight HTTP routeなので、ASGI / Cloudflare / Vercelで同じMCP serverを動かせます。
+- **MCP** — 通常のNight HTTP routeなので、ASGI / Cloudflare / Vercelなど通常のHTTP routeを運べるadapter上で同じMCP serverを動かせます。
 
 ## Cloudflareについて
 
@@ -44,6 +50,6 @@ Python Workers は現在 beta です。compatibility date / flag / runtime SDK �
 
 ## バージョン
 
-現在のPyPI releaseは **all-night 0.1.2 / Python 3.11+** です。`main` の機能は次回releaseまでPyPI版より新しい場合があります。
+現在のPyPI releaseは **all-night 0.1.2 / Python 3.11+** です。Node / Netlify対応を含む `main` の機能は次回releaseまでPyPI版より新しい場合があります。
 
 AIコーディングエージェント向けの作業指針はリポジトリ直下の [`SKILL.md`](../../SKILL.md) を参照してください。
