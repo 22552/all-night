@@ -1344,41 +1344,89 @@ class Router:
     def __init__(self):
         self.routes: list[Route] = []
 
-    def route(self, path: str, methods: t.Iterable[str] = ("GET",), *, name: str | None = None, body: type | None = None):
+    def add_route(
+        self,
+        method: str | t.Iterable[str],
+        path: str,
+        handler: t.Callable,
+        *,
+        name: str | None = None,
+        body: type | None = None,
+    ):
+        methods = (method,) if isinstance(method, str) else method
         methods_set = {m.upper() for m in methods}
+        pattern, names = compile_path(path)
+        route = Route(
+            methods=methods_set,
+            pattern=pattern,
+            param_names=names,
+            endpoint=handler,
+            raw_path=path,
+            name=name,
+            body_model=body,
+        )
+        if body is not None:
+            setattr(handler, "__night_body_model__", body)
+        self.routes.append(route)
+        hook = getattr(self, "_on_route_added", None)
+        if hook is not None:
+            hook(route)
+        return self
 
+    def route(
+        self,
+        path: str,
+        methods: t.Iterable[str] = ("GET",),
+        *,
+        name: str | None = None,
+        body: type | None = None,
+    ):
         def decorator(fn: t.Callable):
-            pattern, names = compile_path(path)
-            route = Route(methods=methods_set, pattern=pattern, param_names=names, endpoint=fn, raw_path=path, name=name, body_model=body)
-            if body is not None:
-                setattr(fn, "__night_body_model__", body)
-            self.routes.append(route)
-            hook = getattr(self, "_on_route_added", None)
-            if hook is not None: hook(route)
+            self.add_route(methods, path, fn, name=name, body=body)
             return fn
 
         return decorator
 
-    def get(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("GET",), name=name)
+    def _method(
+        self,
+        method: str,
+        path: str,
+        handler: t.Callable | None = None,
+        *,
+        name: str | None = None,
+        body: type | None = None,
+    ):
+        if handler is None:
+            return self.route(path, methods=(method,), name=name, body=body)
+        return self.add_route(method, path, handler, name=name, body=body)
 
-    def post(self, path: str, *, name: str | None = None, body: type | None = None):
-        return self.route(path, methods=("POST",), name=name, body=body)
+    def get(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("GET", path, handler, name=name)
 
-    def put(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("PUT",), name=name)
+    def post(
+        self,
+        path: str,
+        handler: t.Callable | None = None,
+        *,
+        name: str | None = None,
+        body: type | None = None,
+    ):
+        return self._method("POST", path, handler, name=name, body=body)
 
-    def delete(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("DELETE",), name=name)
+    def put(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("PUT", path, handler, name=name)
 
-    def query(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("QUERY",), name=name)
+    def delete(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("DELETE", path, handler, name=name)
 
-    def patch(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("PATCH",), name=name)
+    def query(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("QUERY", path, handler, name=name)
 
-    def purge(self, path: str, *, name: str | None = None):
-        return self.route(path, methods=("PURGE",), name=name)
+    def patch(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("PATCH", path, handler, name=name)
+
+    def purge(self, path: str, handler: t.Callable | None = None, *, name: str | None = None):
+        return self._method("PURGE", path, handler, name=name)
 
 
 class Blueprint(Router):
@@ -1555,19 +1603,19 @@ class Night(Router):
         if kind == ROUTE_CALL_REQUEST_KEYWORD:
             if plan.is_coro:
                 async def invoke(req, params, _fn=fn, _coerce=coerce):
-                    return _coerce(await _fn(req=req))
+                    return _coerce(await _fn(req=req, **params))
             else:
                 def invoke(req, params, _fn=fn, _coerce=coerce):
-                    return _coerce(_fn(req=req))
+                    return _coerce(_fn(req=req, **params))
             return invoke
 
         if kind == ROUTE_CALL_REQUEST_POSITIONAL:
             if plan.is_coro:
                 async def invoke(req, params, _fn=fn, _coerce=coerce):
-                    return _coerce(await _fn(req))
+                    return _coerce(await _fn(req, **params))
             else:
                 def invoke(req, params, _fn=fn, _coerce=coerce):
-                    return _coerce(_fn(req))
+                    return _coerce(_fn(req, **params))
             return invoke
 
         route._night_invoke_async = True
