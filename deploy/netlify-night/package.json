@@ -7,7 +7,7 @@
   },
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
-    "build:functions": "netlify functions:build",
+    "build:functions": "netlify functions:build --src netlify/functions --functions .netlify/functions",
     "dev": "netlify dev"
   },
   "dependencies": {
