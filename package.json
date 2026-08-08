@@ -1,0 +1,14 @@
+{
+  "name": "all-night-node-runtime",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test:node": "node tests/node_runtime.mjs"
+  },
+  "dependencies": {
+    "pyodide": "314.0.3"
+  }
+}
