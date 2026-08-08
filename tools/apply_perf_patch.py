@@ -1,8 +1,8 @@
 from pathlib import Path
 import re
 
-path = Path("night.py")
-text = path.read_text(encoding="utf-8")
+night_path = Path("night.py")
+text = night_path.read_text(encoding="utf-8")
 
 
 def replace_once(old: str, new: str, marker: str) -> None:
@@ -15,17 +15,27 @@ def replace_once(old: str, new: str, marker: str) -> None:
         raise SystemExit(f"patch anchor not found: {marker}")
 
 
+def remove_once(old: str, label: str) -> None:
+    global text
+    if old in text:
+        text = text.replace(old, "", 1)
+    else:
+        print(f"already absent: {label}")
+
+
 # 1) Remove the combined dynamic matcher. Dispatch never consumes it, while
 # rebuilding it after every dynamic route makes registration O(n^2)-ish.
-replace_once(
+remove_once(
     "        self._dynamic_method_matchers: dict[str, tuple[re.Pattern, list[Route]]] = {}\n",
-    "",
-    "_dynamic_method_matchers removed",
+    "dynamic matcher storage",
 )
-replace_once(
+remove_once(
     "                self._rebuild_dynamic_matcher(method)\n",
-    "",
-    "_rebuild_dynamic_matcher call removed",
+    "dynamic matcher rebuild call",
+)
+remove_once(
+    "        self._dynamic_method_matchers.clear()\n",
+    "dynamic matcher mount clear",
 )
 text, removed = re.subn(
     r"\n    def _rebuild_dynamic_matcher\(self, method: str\) -> None:\n.*?(?=\n    def enable_css\()",
@@ -133,4 +143,20 @@ new_compile = '''    def compile(self, source: str, *, name: str = "<string>") -
 '''
 replace_once(old_compile, new_compile, "self._warm_nodes(frozen_nodes)")
 
-path.write_text(text, encoding="utf-8")
+night_path.write_text(text, encoding="utf-8")
+
+# Update the internal implementation test: behavior matters, not existence of
+# the removed unused combined matcher cache.
+test_path = Path("tests/test_fast_paths.py")
+test_text = test_path.read_text(encoding="utf-8")
+test_text = test_text.replace(
+    "def test_combined_dynamic_matcher_selects_route_and_converts_params():\n",
+    "def test_multiple_dynamic_routes_select_and_convert_params():\n",
+    1,
+)
+test_text = test_text.replace(
+    '    assert "GET" in app._dynamic_method_matchers\n',
+    "",
+    1,
+)
+test_path.write_text(test_text, encoding="utf-8")
