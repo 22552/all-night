@@ -19,6 +19,12 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
+[project.optional-dependencies]
+standard = [
+  "uvicorn[standard]>=0.30",
+  "orjson>=3.10",
+]
+
 [project.urls]
 Homepage = "https://github.com/22552/all-night"
 Documentation = "https://github.com/22552/all-night/tree/main/docs"
