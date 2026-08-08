@@ -89,9 +89,17 @@ jobs:
           from night import Night, TemplateEngine
           from fastnight import FastNight, FastTemplateEngine
 
-          TEMPLATE = '''<h1>${{ title }}</h1>
-          ${% if user.admin %}<b>${{ user.name }}</b>${% else %}${{ user.name }}${% endif %}
-          <ul>${% for item in items %}<li>${{ item }}</li>${% endfor %}</ul>'''
+          # Build Night template delimiters without spelling the GitHub Actions
+          # expression opener in this workflow source.
+          E = '$' + '{{'
+          T = '$' + '{%'
+          TEMPLATE = (
+              '<h1>' + E + ' title }}</h1>\n'
+              + T + ' if user.admin %}<b>' + E + ' user.name }}</b>'
+              + T + ' else %}' + E + ' user.name }}' + T + ' endif %}\n'
+              + '<ul>' + T + ' for item in items %}<li>' + E + ' item }}</li>'
+              + T + ' endfor %}</ul>'
+          )
           CONTEXT = {
               'title': 'Night',
               'user': {'name': 'alice', 'admin': True},
@@ -112,7 +120,6 @@ jobs:
           normal_template=normal_engine.compile(TEMPLATE)
           fast_template=fast_engine.compile(TEMPLATE)
 
-          # Warm caches and validate equivalent output first.
           expected=normal_template.render(CONTEXT)
           actual=fast_template.render(CONTEXT)
           assert actual == expected, (expected, actual)
@@ -125,8 +132,6 @@ jobs:
           print(f'fastnight: {N/t_fast:.1f} renders/s ({t_fast:.4f}s)')
           print(f'gain: {(t_normal/t_fast-1)*100:+.1f}%')
 
-          # Register many dynamic routes. Night rebuilds its unused combined
-          # matcher after each addition; FastNight intentionally skips it.
           ROUTES=500
           def build_normal():
               app=Night()
@@ -143,18 +148,6 @@ jobs:
           print(f'night: {ROUTES/r_normal:.1f} routes/s ({r_normal:.4f}s)')
           print(f'fastnight: {ROUTES/r_fast:.1f} routes/s ({r_fast:.4f}s)')
           print(f'gain: {(r_normal/r_fast-1)*100:+.1f}%')
-
-          # Repeated Request.state access benchmark.
-          async def receive():
-              return {'type':'http.request','body':b'','more_body':False}
-          async def send(event):
-              pass
-          from night import Request
-          req=Request({'type':'http','state':{}}, receive, send)
-          S=1_000_000
-          state_time=measure(lambda: [req.state for _ in range(S)], repeat=5)
-          print('## Request.state repeated access (FastNight process patch active)')
-          print(f'{S/state_time:.1f} accesses/s ({state_time:.4f}s)')
           PY
 
       - name: Summarize HTTP
