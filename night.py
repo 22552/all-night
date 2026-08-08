@@ -1325,6 +1325,7 @@ class TemplateEngine:
         }
         self._cache: dict[str, tuple[int, int, Template]] = {}
         self._expression_cache: dict[str, tuple[str, ast.AST, tuple[str, ...]]] = {}
+        self._expression_cache: dict[str, tuple[str, ast.AST, tuple[str, ...]]] = {}
 
     def make_context(self, context: t.Mapping[str, t.Any] | None = None) -> dict[str, t.Any]:
         return dict(context or {})
