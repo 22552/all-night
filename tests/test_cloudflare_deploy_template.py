@@ -39,6 +39,7 @@ def test_cloudflare_deploy_template_python_compiles():
 def test_cloudflare_todo_routes_are_present():
     entry = (ROOT / "src" / "entry.py").read_text()
     assert "from night import HTMLResponse, Night" in entry
+    assert "from night_cloudflare import cloudflare" in entry
     assert "app = Night()" in entry
     assert "FastNight" not in entry
     assert '@app.get("/")' in entry
@@ -52,7 +53,7 @@ def test_cloudflare_todo_routes_are_present():
     assert "Night + Cloudflare Python Workers + KV" in entry
     assert '@app.rpc("todo_count")' in entry
     assert "async def night_rpc" in entry
-    assert "app.cloudflare_fetch(request)" in entry
+    assert "cloudflare(app, request)" in entry
     assert "app.cloudflare_rpc(method, args, kwargs)" in entry
 
 
