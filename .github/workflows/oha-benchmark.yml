@@ -9,7 +9,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -90,11 +90,11 @@ jobs:
           bench() {
             local name="$1" port="$2" pid="$3"
             wait_ready "http://127.0.0.1:${port}/"
-            oha -z 2s -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            oha -z 1s -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
             for endpoint in static dynamic; do
               if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
-              for run in 1 2 3; do
-                oha -z 5s -c 100 --no-tui --output-format json \
+              for run in 1 2; do
+                oha -z 1s -c 100 --no-tui --output-format json \
                   "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
               done
             done
