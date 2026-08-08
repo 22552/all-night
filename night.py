@@ -1324,6 +1324,8 @@ class TemplateEngine:
             "json": lambda value: SafeString(json.dumps(value, ensure_ascii=False, separators=(",", ":"))),
         }
         self._cache: dict[str, tuple[int, int, Template]] = {}
+        self._expression_cache: dict[str, tuple[str, ast.AST, tuple[str, ...]]] = {}
+        self._expression_cache: dict[str, tuple[str, ast.AST, tuple[str, ...]]] = {}
 
     def make_context(self, context: t.Mapping[str, t.Any] | None = None) -> dict[str, t.Any]:
         return dict(context or {})
@@ -1341,6 +1343,9 @@ class TemplateEngine:
         return SafeString(str(value))
 
     def _split_filters(self, expression: str) -> list[str]:
+        if "|" not in expression:
+            expression = expression.strip()
+            return [expression] if expression else []
         parts, current = [], []
         depth = 0
         quote = None
@@ -1373,13 +1378,49 @@ class TemplateEngine:
         parts.append("".join(current).strip())
         return [part for part in parts if part]
 
-    def evaluate(self, expression: str, context: t.Mapping[str, t.Any]) -> tuple[str, t.Any]:
+    def _compile_expression(self, expression: str) -> tuple[str, ast.AST, tuple[str, ...]]:
+        cached = self._expression_cache.get(expression)
+        if cached is not None:
+            return cached
         pipeline = self._split_filters(expression)
         if not pipeline:
-            return "", ""
+            compiled = ("", ast.Constant(value=""), ())
+            self._expression_cache[expression] = compiled
+            return compiled
         base = pipeline[0]
-        value = _TemplateExpression(context).evaluate(base)
-        for name in pipeline[1:]:
+        try:
+            node = ast.parse(base, mode="eval").body
+        except SyntaxError as exc:
+            raise TemplateError(f"Invalid template expression: {base!r}") from exc
+        compiled = (base, node, tuple(pipeline[1:]))
+        self._expression_cache[expression] = compiled
+        return compiled
+
+    def _warm_nodes(self, nodes) -> None:
+        for node in nodes:
+            kind = node[0]
+            if kind == "expr":
+                self._compile_expression(node[1])
+            elif kind == "if":
+                branches, otherwise = node[1], node[2]
+                for condition, body in branches:
+                    self._compile_expression(condition)
+                    self._warm_nodes(body)
+                self._warm_nodes(otherwise)
+            elif kind == "for":
+                _targets, expression, body, otherwise = node[1:]
+                self._compile_expression(expression)
+                self._warm_nodes(body)
+                self._warm_nodes(otherwise)
+            elif kind == "include":
+                self._compile_expression(node[1])
+
+    def evaluate(self, expression: str, context: t.Mapping[str, t.Any]) -> tuple[str, t.Any]:
+        base, node, filters = self._compile_expression(expression)
+        if not base:
+            return "", ""
+        value = _TemplateExpression(context).visit(node)
+        for name in filters:
             fn = self.filters.get(name)
             if fn is None:
                 raise TemplateError(f"Unknown template filter: {name}")
@@ -1471,7 +1512,9 @@ class TemplateEngine:
 
     def compile(self, source: str, *, name: str = "<string>") -> Template:
         nodes, _, _ = self._parse_nodes(self._tokenize(source))
-        return Template(self, str(source), tuple(nodes), name)
+        frozen_nodes = tuple(nodes)
+        self._warm_nodes(frozen_nodes)
+        return Template(self, str(source), frozen_nodes, name)
 
     def _resolve_path(self, filename: str) -> str:
         path = _safe_join(self.template_folder, str(filename))
@@ -2124,7 +2167,6 @@ class Night(Router):
         self._static_route_index: dict[str, list[Route]] = {}
         self._dynamic_route_index: list[Route] = []
         self._dynamic_method_routes: dict[str, list[Route]] = {}
-        self._dynamic_method_matchers: dict[str, tuple[re.Pattern, list[Route]]] = {}
         self._dynamic_prefix_index: dict[str, dict[str, list[Route]]] = {}
         self._dynamic_terminal_index: dict[str, dict[str, Route]] = {}
         self._static_method_index: dict[str, dict[str, Route]] = {}
@@ -2331,7 +2373,6 @@ class Night(Router):
                     if not suffix and prefix.endswith("/"):
                         base = prefix[:-1] or "/"
                         self._dynamic_terminal_index.setdefault(method, {})[base] = route
-                self._rebuild_dynamic_matcher(method)
             self._classify_route_call(route, plan)
             route._night_invoke = self._compile_route_invoker(route, plan)
             return
@@ -2391,22 +2432,6 @@ class Night(Router):
                 if params is not None:
                     return route, params
         return None
-
-    def _rebuild_dynamic_matcher(self, method: str) -> None:
-        routes = self._dynamic_method_routes.get(method, ())
-        if len(routes) < 2:
-            self._dynamic_method_matchers.pop(method, None)
-            return
-        branches = []
-        for route in routes:
-            body = route.pattern.pattern
-            if body.startswith("^"):
-                body = body[1:]
-            if body.endswith("$"):
-                body = body[:-1]
-            body = re.sub(r"\(\?P<[^>]+>", "(?:", body)
-            branches.append(f"({body})")
-        self._dynamic_method_matchers[method] = (re.compile("^(?:" + "|".join(branches) + ")$"), list(routes))
 
     def enable_css(self, *, minify: bool = False):
         self.css_minify = minify
@@ -2757,7 +2782,6 @@ class Night(Router):
         self._static_route_index.clear()
         self._dynamic_route_index.clear()
         self._dynamic_method_routes.clear()
-        self._dynamic_method_matchers.clear()
         self._dynamic_prefix_index.clear()
         self._dynamic_terminal_index.clear()
         self._static_method_index.clear()

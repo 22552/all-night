@@ -66,7 +66,7 @@ def test_dynamic_routes_fall_back_and_convert_int_params():
     assert b'"id":42' in response.body
 
 
-def test_combined_dynamic_matcher_selects_route_and_converts_params():
+def test_multiple_dynamic_routes_select_and_convert_params():
     app = Night()
 
     @app.get("/users/<int:id>")
@@ -77,7 +77,6 @@ def test_combined_dynamic_matcher_selects_route_and_converts_params():
     def post(id: int):
         return {"kind": "post", "id": id}
 
-    assert "GET" in app._dynamic_method_matchers
     route, params = app._match_method("/posts/42", "GET")
     assert route.endpoint is post
     assert params == {"id": 42}
