@@ -90,13 +90,11 @@ jobs:
           bench() {
             local name="$1" port="$2" pid="$3"
             wait_ready "http://127.0.0.1:${port}/"
-            oha -z 1s -c 100 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            oha -n 200 -c 50 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
             for endpoint in static dynamic; do
               if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
-              for run in 1 2; do
-                oha -z 1s -c 100 --no-tui --output-format json \
-                  "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}-${run}.json"
-              done
+              oha -n 1000 -c 50 --no-tui --output-format json \
+                "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}.json"
             done
             kill "$pid" || true
             wait "$pid" 2>/dev/null || true
@@ -114,21 +112,11 @@ jobs:
       - name: Summarize
         run: |
           python - <<'PY'
-          import json, glob, statistics
-          rows=[]
+          import json
           for fw in ('night','fastapi','robyn'):
               for endpoint in ('static','dynamic'):
-                  vals=[]
-                  lats=[]
-                  for f in sorted(glob.glob(f'bench-results/{fw}-{endpoint}-*.json')):
-                      d=json.load(open(f))
-                      vals.append(d['summary']['requestsPerSec'])
-                      lats.append(d['summary']['average'])
-                  rows.append((fw, endpoint, statistics.mean(vals), statistics.mean(lats), vals, lats))
-          print('| framework | route | mean req/s | mean latency (ms) | runs req/s |')
-          print('|---|---|---:|---:|---|')
-          for fw,ep,rps,lat,vals,lats in rows:
-              print(f'| {fw} | {ep} | {rps:.1f} | {lat*1000:.3f} | ' + ', '.join(f'{x:.1f}' for x in vals) + ' |')
+                  d=json.load(open(f'bench-results/{fw}-{endpoint}.json'))
+                  print(f"{fw} {endpoint}: {d['summary']['requestsPerSec']:.1f} req/s, {d['summary']['average']*1000:.3f} ms avg")
           PY
 
       - uses: actions/upload-artifact@v4
