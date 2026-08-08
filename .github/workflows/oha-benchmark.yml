@@ -91,15 +91,16 @@ jobs:
 
           bench() {
             local name="$1" port="$2" pid="$3"
+            echo "== $name =="
             wait_ready "http://127.0.0.1:${port}/"
-            oha -n 200 -c 50 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
+            timeout 10s oha -n 100 -c 25 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
             for endpoint in static dynamic; do
               if [[ "$endpoint" == static ]]; then path='/'; else path='/users/42'; fi
-              oha -n 1000 -c 50 --no-tui --output-format json \
+              echo "$name $endpoint"
+              timeout 10s oha -n 500 -c 25 --no-tui --output-format json \
                 "http://127.0.0.1:${port}${path}" > "bench-results/${name}-${endpoint}.json"
             done
-            kill "$pid" || true
-            wait "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
           }
 
           uvicorn bench_night:app --host 127.0.0.1 --port 8001 --workers 1 --no-access-log >bench-results/night-server.log 2>&1 &
