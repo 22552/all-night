@@ -3,6 +3,7 @@
     subscriptions: [],
     listeners: new Map(),
     sockets: new Map(),
+    persistence: new Map(),
   };
 
   const post = (type, event) => parent.postMessage({ type, event }, "*");
@@ -142,6 +143,99 @@
     return true;
   }
 
+  function persistBody(item) {
+    if (typeof item.data === "string") return item.data;
+    return JSON.stringify(item.data ?? null);
+  }
+
+  function persistHeaders(item) {
+    const headers = { ...(item.headers || {}) };
+    const hasContentType = Object.keys(headers).some(name => name.toLowerCase() === "content-type");
+    if (!hasContentType && item.content_type) headers["Content-Type"] = item.content_type;
+    return headers;
+  }
+
+  function sendPersist(item) {
+    const body = persistBody(item);
+    const customHeaders = item.headers && Object.keys(item.headers).length > 0;
+    const canBeacon = item.transport !== "fetch" && !customHeaders && typeof navigator.sendBeacon === "function";
+
+    if (canBeacon) {
+      try {
+        const payload = new Blob([body], { type: item.content_type || "application/json" });
+        if (navigator.sendBeacon(item.url, payload)) return Promise.resolve(true);
+      } catch {}
+      if (item.transport === "beacon") return Promise.resolve(false);
+    }
+
+    if (item.transport === "beacon") return Promise.resolve(false);
+    try {
+      return fetch(item.url, {
+        method: "POST",
+        body,
+        headers: persistHeaders(item),
+        keepalive: true,
+        credentials: "same-origin",
+      }).then(() => true, () => false);
+    } catch {
+      return Promise.resolve(false);
+    }
+  }
+
+  function registerPersist(item) {
+    const normalized = {
+      key: String(item.key ?? "default"),
+      url: String(item.url),
+      data: item.data ?? null,
+      transport: String(item.transport ?? "auto"),
+      when: String(item.when ?? "leave"),
+      headers: item.headers && typeof item.headers === "object" ? { ...item.headers } : {},
+      content_type: String(item.content_type ?? "application/json"),
+    };
+    state.persistence.set(normalized.key, normalized);
+    if (normalized.when === "now") sendPersist(normalized);
+    return normalized.key;
+  }
+
+  function cancelPersist(key = "default") {
+    return state.persistence.delete(String(key));
+  }
+
+  function flushPersist({ key = null, when = null } = {}) {
+    const jobs = [];
+    for (const [persistKey, item] of state.persistence) {
+      if (key != null && persistKey !== String(key)) continue;
+      if (when != null && item.when !== String(when)) continue;
+      jobs.push(sendPersist(item));
+    }
+    return Promise.allSettled(jobs);
+  }
+
+  function lifecycle(name, detail = {}) {
+    post("midnight-event", {
+      type: `custom:__lifecycle_${name}`,
+      selector: null,
+      detail: {
+        visibility_state: document.visibilityState,
+        persisted: Boolean(detail.persisted),
+      },
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      lifecycle("hide");
+      void flushPersist({ when: "hide" });
+    } else if (document.visibilityState === "visible") {
+      lifecycle("show");
+    }
+  });
+
+  window.addEventListener("pagehide", event => {
+    lifecycle("leave", { persisted: event.persisted });
+    void flushPersist({ when: "leave" });
+  });
+
   function each(selector, fn) {
     for (const element of document.querySelectorAll(selector)) fn(element);
   }
@@ -184,6 +278,15 @@
           }
         }
         break;
+      case "persist":
+        registerPersist(command);
+        break;
+      case "persist_cancel":
+        cancelPersist(command.key);
+        break;
+      case "persist_flush":
+        void flushPersist({ key: command.key ?? null });
+        break;
       case "ws_connect":
         connect(command.url, { socketId: command.socket_id, protocols: command.protocols || [] });
         break;
@@ -208,6 +311,13 @@
     connect,
     send,
     close,
+    persist(url, data = null, options = {}) {
+      return registerPersist({ url, data, ...options });
+    },
+    cancelPersist,
+    flushPersist(key = null) {
+      return flushPersist({ key });
+    },
   });
 
   window.addEventListener("message", event => {
