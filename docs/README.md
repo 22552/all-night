@@ -54,6 +54,6 @@ Python Workers are currently beta and require the `python_workers` compatibility
 
 ## Version
 
-The current PyPI release documented here is **all-night 0.1.2** and requires Python **3.11+**. Node/Netlify support on `main` may be newer than the latest PyPI package release.
+The current PyPI release documented here is **all-night 0.1.3** and requires Python **3.11+**. This release includes Midnight as bundled modules: `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`. Midnight is part of `all-night`, not a separate PyPI distribution.
 
 For coding agents, see the repository-level [`SKILL.md`](../SKILL.md).
