@@ -1,45 +1,109 @@
 """Experimental Night hot-path optimizations.
 
-The fastNight branch keeps these changes isolated until benchmarks show a
-repeatable win.  This revision deliberately optimizes only the common single
-parameter dynamic-route path and otherwise delegates to Night unchanged.
+The fastNight branch keeps changes isolated until benchmarks show a repeatable
+win. This revision focuses only on response construction/header encoding; route
+matching and dispatch behavior stay identical to Night.
 """
 
 from __future__ import annotations
 
-from night import Night, Request, Response, ROUTE_CALL_DIRECT_PARAM
+import json
+import typing as t
+
+from night import FileHandler, Night, Request, Response, _cached_http_date, request
+
+_JSON_CT = "application/json; charset=utf-8"
+_TEXT_CT = "text/plain; charset=utf-8"
+
+
+class _FastResponse(Response):
+    """Response variant that encodes ASGI headers once at construction time."""
+
+    __slots__ = ("status", "body", "headers", "raw_headers", "_asgi_headers")
+
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        content_type: str | None = None,
+    ):
+        self.status = int(status)
+        self.body = body
+        self.raw_headers = []
+
+        length = str(len(body))
+        date = _cached_http_date()
+        if content_type is None:
+            self.headers = {
+                "date": date,
+                "content-length": length,
+            }
+            self._asgi_headers = [
+                (b"date", date.encode("latin-1")),
+                (b"content-length", length.encode("ascii")),
+            ]
+        else:
+            self.headers = {
+                "content-type": content_type,
+                "date": date,
+                "content-length": length,
+            }
+            self._asgi_headers = [
+                (b"content-type", content_type.encode("latin-1")),
+                (b"date", date.encode("latin-1")),
+                (b"content-length", length.encode("ascii")),
+            ]
+
+    def asgi_headers(self) -> list[tuple[bytes, bytes]]:
+        return self._asgi_headers
+
+    def add_header(self, name: str, value: str):
+        # Preserve Response mutation semantics for cookies/middleware. Once a
+        # header is added, update both public representations together.
+        lname = name.lower()
+        self.raw_headers.append((lname, value))
+        self._asgi_headers.append((lname.encode("latin-1"), value.encode("latin-1")))
+
+    async def __call__(self, scope, receive, send):
+        await send({
+            "type": "http.response.start",
+            "status": self.status,
+            "headers": self._asgi_headers,
+        })
+        await send({
+            "type": "http.response.body",
+            "body": self.body,
+            "more_body": False,
+        })
 
 
 class FastNight(Night):
-    """Night with a small dynamic-route dispatch shortcut."""
+    """Night with response-construction shortcuts only."""
 
-    async def _dispatch(self, req: Request, path: str | None = None,
-                        method: str | None = None) -> Response:
-        path = req.path if path is None else path
-        method = req.method if method is None else method
+    def _coerce_response(self, value: t.Any) -> Response:
+        if isinstance(value, FileHandler):
+            return value.response(request())
 
-        # Common API shape: one dynamic route for a method, one <str/int:param>,
-        # direct positional handler, and no hooks.  Night already recognizes
-        # this shape; here we avoid _match_direct_for_dispatch()'s tuple return
-        # and its second layer of branching on the hottest path.
-        if not self.before_hooks and not self.after_hooks:
-            routes = self._dynamic_method_routes.get(method)
-            if routes and len(routes) == 1:
-                route = routes[0]
-                if (
-                    route._night_call_kind == ROUTE_CALL_DIRECT_PARAM
-                    and route._night_simple_dynamic is not None
-                ):
-                    key = path if path == "/" or not path.endswith("/") else path.rstrip("/")
-                    value = self._simple_dynamic_value(route, key)
-                    if value is not None:
-                        req.path_params[route._night_direct_param] = value
-                        invoke = route._night_invoke_scalar
-                        if route._night_invoke_async:
-                            return await invoke(value)
-                        return invoke(value)
-
-        return await super()._dispatch(req, path, method)
+        kind = type(value)
+        if kind is dict or kind is list:
+            body = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            return _FastResponse(body, content_type=_JSON_CT)
+        if kind is str:
+            return _FastResponse(value.encode("utf-8"), content_type=_TEXT_CT)
+        if kind is bytes:
+            return _FastResponse(value)
+        if value is None:
+            return _FastResponse(b"", status=204)
+        if isinstance(value, Response):
+            return value
+        if kind is bytearray:
+            return _FastResponse(bytes(value))
+        return _FastResponse(str(value).encode("utf-8"), content_type=_TEXT_CT)
 
 
 __all__ = ["FastNight"]
