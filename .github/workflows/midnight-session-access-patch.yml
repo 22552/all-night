@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Install focused test dependency
+        run: python -m pip install pytest
       - name: Tighten Midnight cross-session access
         run: python tools/patch_midnight_session_access.py
       - name: Run focused tests
