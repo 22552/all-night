@@ -11,6 +11,7 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 - [テンプレート](guides/templates.md) — `${{ ... }}`、if/for/include、制限付き式、filter、拡張用TemplateEngine
 - [Node.js runtime](guides/node.md) — Pyodide + Web標準Request/ResponseでNode 22 / 24を公式サポート
 - [Midnight: Python ↔ HTML ブリッジ](guides/midnight.md)
+- [Midnight Forms](guides/midnight-forms.md) — 入力中のform snapshot、`FormSnapshot`、`getone()`、`getlist()`
 - [Midnightコンポーネント + Hot Reload](guides/midnight-components.md) — selector/namespace付き再利用UIとstdlib-only WebSocket開発reload
 - [Browser Night](guides/browser.md) — Pyodideでブラウザー内にNightを起動し、runtime assetを永続キャッシュ
 - [Model Context Protocol](guides/mcp.md) — Night RPCをstateless MCP 2026-07-28 toolとして公開
