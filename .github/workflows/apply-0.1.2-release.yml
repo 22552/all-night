@@ -1,0 +1,520 @@
+name: Prepare 0.1.2 browser docs release
+
+on:
+  push:
+    branches:
+      - release/0.1.2-browser-docs
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/0.1.2-browser-docs
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply release changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  if new in text:
+                      return
+                  raise SystemExit(f"target not found in {path}: {old[:100]!r}")
+              if text.count(old) != 1:
+                  raise SystemExit(f"ambiguous target in {path}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # Version metadata.
+          replace_once("pyproject.toml", 'version = "0.1.1"', 'version = "0.1.2"')
+          replace_once("SKILL.md", "Current documented PyPI release: `0.1.1`", "Current documented PyPI release: `0.1.2`")
+
+          # Root README: Browser Night, current release, and docs link.
+          replace_once(
+              "README.md",
+              "- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; no request/response adapter is needed.\n",
+              "- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; no request/response adapter is needed.\n- **Browser Night** — run Night entirely in a browser tab with Pyodide; a service worker persistently caches versioned Pyodide runtime assets after the first load.\n",
+          )
+          replace_once(
+              "README.md",
+              "## Documentation\n",
+              dedent('''\
+              ## Browser Night
+
+              Night can run entirely in the browser through Pyodide and the `night_web` adapter. No Python server is required: routes execute inside the tab and Web-style requests are bridged into the same Night application.
+
+              ```python
+              from night import Night, send_file
+
+              app = Night().gz()
+              app.get("/hello", lambda: {"hello": "browser"})
+              app.get("/data", send_file("data.json"))
+              ```
+
+              The GitHub Pages demo lives under [`deploy/browser-night`](deploy/browser-night). Its service worker caches only versioned Pyodide CDN assets (`.mjs`, `.wasm`, package metadata, and packages such as `sqlite3`) in Cache Storage, so later starts can reuse the runtime without freezing Night's own source updates. See the [Browser Night guide](docs/guides/browser.md).
+
+              ## Documentation
+              '''),
+          )
+          replace_once(
+              "README.md",
+              "- [HTTP guide](docs/guides/http.md)\n",
+              "- [HTTP guide](docs/guides/http.md)\n- [Browser Night / Pyodide](docs/guides/browser.md)\n",
+          )
+          replace_once("README.md", "Current PyPI release: **0.1.1**.", "Current PyPI release: **0.1.2**.")
+
+          # English docs index.
+          replace_once(
+              "docs/README.md",
+              "- [HTTP applications](guides/http.md) — routing, requests, responses, forms, files, validation, cookies, and streaming\n",
+              "- [HTTP applications](guides/http.md) — routing, fluent registration, requests, responses, gzip file handlers, forms, validation, cookies, and streaming\n- [Browser Night](guides/browser.md) — run Night inside a browser with Pyodide and persistent runtime caching\n",
+          )
+          replace_once(
+              "docs/README.md",
+              "- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; see the Vercel deployment template under `deploy/vercel-night`.\n",
+              "- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; see the Vercel deployment template under `deploy/vercel-night`.\n- **Browser / Pyodide** — Browser Night executes the same application locally in the tab through `night_web`; a service worker caches versioned Pyodide runtime assets between visits.\n",
+          )
+          replace_once(
+              "docs/README.md",
+              "The current PyPI release documented here is **all-night 0.1.1** and requires Python **3.11+**.",
+              "The current PyPI release documented here is **all-night 0.1.2** and requires Python **3.11+**.",
+          )
+
+          # Japanese docs index.
+          replace_once(
+              "docs/ja/README.md",
+              "- [HTTPアプリケーション](guides/http.md) — ルーティング、Request/Response、フォーム、アップロード、検証\n",
+              "- [HTTPアプリケーション](guides/http.md) — ルーティング、チェーン登録、Request/Response、gzipファイル配信、フォーム、検証\n- [Browser Night](guides/browser.md) — Pyodideでブラウザー内にNightを起動し、runtime assetを永続キャッシュ\n",
+          )
+          replace_once(
+              "docs/ja/README.md",
+              "- **Vercel Functions** — Vercel Python runtimeからNightのASGI `app`を直接実行可能。\n",
+              "- **Vercel Functions** — Vercel Python runtimeからNightのASGI `app`を直接実行可能。\n- **Browser / Pyodide** — `night_web`を介して同じNight appをタブ内で実行。version付きPyodide assetはService Workerで再利用します。\n",
+          )
+          replace_once(
+              "docs/ja/README.md",
+              "現在のPyPI releaseは **all-night 0.1.1 / Python 3.11+** です。",
+              "現在のPyPI releaseは **all-night 0.1.2 / Python 3.11+** です。",
+          )
+
+          # HTTP guides: explicit/chained route registration and gzip file handlers.
+          replace_once(
+              "docs/guides/http.md",
+              "Available helpers are `get`, `post`, `put`, `patch`, `delete`, `query`, and `purge`. GET routes automatically answer HEAD. OPTIONS is generated with an `Allow` header.\n",
+              dedent('''\
+              Available helpers are `get`, `post`, `put`, `patch`, `delete`, `query`, and `purge`. GET routes automatically answer HEAD. OPTIONS is generated with an `Allow` header.
+
+              Routes can also be registered explicitly or fluently:
+
+              ```python
+              def home():
+                  return "home"
+
+              def login():
+                  return "login"
+
+              app.add_route("GET", "/health", lambda: {"ok": True})
+              app.get("/", home).post("/login", login)
+              ```
+
+              Passing a handler directly returns the router/app, so route helpers can be chained. Calling `app.get("/path")` without a handler keeps the normal decorator form.
+              '''),
+          )
+          replace_once(
+              "docs/guides/http.md",
+              "`Response.set_cookie()` and `Response.delete_cookie()` support cookie attributes and multiple `Set-Cookie` headers.\n",
+              dedent('''\
+              `Response.set_cookie()` and `Response.delete_cookie()` support cookie attributes and multiple `Set-Cookie` headers.
+
+              ### Chainable file responses and gzip
+
+              `send_file()` returns a lazy file handler. It can be returned from a route or registered directly:
+
+              ```python
+              app.get("/manual", send_file("manual.pdf"))
+              app.get("/data", send_file("data.json").gz())
+              ```
+
+              `send_file(...).gz(level)` serves an HTTP gzip representation with `Content-Encoding: gzip` and `Vary: Accept-Encoding`. The compressed representation is stored in the OS temporary directory and reused using a cache key derived from source path, nanosecond mtime, source size, and gzip level. Changing the source naturally creates a new cached representation.
+
+              Enable gzip as the default for Night file/static responses with `app.gz()`; use `.raw()` to opt an individual file out:
+
+              ```python
+              app.gz(9).get("/data", send_file("data.json"))
+              app.get("/raw", send_file("data.json").raw())
+              ```
+              '''),
+          )
+
+          replace_once(
+              "docs/ja/guides/http.md",
+              "`get`、`post`、`put`、`patch`、`delete`、`query`、`purge` を使えます。GETにはHEADが自動対応し、OPTIONSには `Allow` ヘッダー付きで応答します。パス変換は `str`、`int`、`path` です。\n",
+              dedent('''\
+              `get`、`post`、`put`、`patch`、`delete`、`query`、`purge` を使えます。GETにはHEADが自動対応し、OPTIONSには `Allow` ヘッダー付きで応答します。パス変換は `str`、`int`、`path` です。
+
+              handlerを直接渡す明示登録・チェーン登録にも対応しています。
+
+              ```python
+              def home():
+                  return "home"
+
+              app.add_route("GET", "/health", lambda: {"ok": True})
+              app.get("/", home).get("/about", lambda: "about")
+              ```
+
+              handlerを省略した `@app.get("/path")` は従来どおりdecoratorとして動きます。
+              '''),
+          )
+          replace_once(
+              "docs/ja/guides/http.md",
+              "辞書・リストはJSON、文字列はテキストとして返されます。明示的なレスポンスには `jsonify`、`text`、`html`、`redirect`、`stream`、`send_file` を利用できます。\n",
+              dedent('''\
+              辞書・リストはJSON、文字列はテキストとして返されます。明示的なレスポンスには `jsonify`、`text`、`html`、`redirect`、`stream`、`send_file` を利用できます。
+
+              ## ファイル配信とgzip
+
+              `send_file()` は遅延評価されるfile handlerを返すため、そのままrouteへ登録できます。
+
+              ```python
+              app.get("/file", send_file("data.json"))
+              app.get("/file.gz", send_file("data.json").gz())
+              ```
+
+              `.gz(level)` はHTTPの `Content-Encoding: gzip` として配信し、圧縮済みデータをOSの一時ディレクトリへキャッシュします。cache keyは元ファイルの絶対path・mtime(ns)・size・gzip levelから作るため、元ファイルを更新すると自動的に別cacheへ切り替わります。
+
+              `app.gz()` を使うと `send_file()` / `static()` のデフォルトをgzipにできます。個別に無効化する場合は `.raw()` を使います。
+
+              ```python
+              app.gz().get("/data", send_file("data.json"))
+              app.get("/raw", send_file("data.json").raw())
+              ```
+              '''),
+          )
+
+          Path("docs/guides/browser.md").write_text(dedent('''\
+          # Browser Night
+
+          Browser Night runs a Night application entirely inside a browser tab using Pyodide. The browser loads Python, writes Night and your `app.py` into Pyodide's in-memory filesystem, then sends Web-style requests through `night_web.handle_web` into the same Night routing core used on servers.
+
+          No Python HTTP server is required for the deployed demo.
+
+          ## Files
+
+          - `deploy/browser-night/404.html` — the browser shell and SPA fallback. GitHub Pages copies it to `index.html` during deployment so `/all-night/` returns the shell normally while nested routes still fall back through `404.html`.
+          - `deploy/browser-night/app.py` — the application loaded into Pyodide.
+          - `deploy/browser-night/debug.html` — a small request/debug console useful for local development.
+          - `deploy/browser-night/sw.js` — persistent Pyodide runtime cache.
+          - `night_web.py` — the Web-style request/response adapter used inside Pyodide.
+
+          ## Pyodide cache
+
+          Starting Pyodide is the expensive part of a cold browser load. Browser Night registers `sw.js` before starting the runtime. The service worker uses Cache Storage with a versioned cache name (`night-pyodide-v1`) and a cache-first strategy for requests under the versioned jsDelivr Pyodide paths.
+
+          This means assets such as `pyodide.mjs`, the WebAssembly runtime, package indexes, and loaded packages such as `sqlite3` can be reused on later visits. The first visit still needs the network. Browser storage may be evicted by the browser, and private/incognito modes may not preserve it.
+
+          Only versioned Pyodide CDN assets are cached by this service worker. Night's source files and `app.py` keep their normal update behavior, so updating the framework/application does not require clearing the large Pyodide cache. When the cache policy itself changes, bump the cache name in `sw.js`; activation deletes older `night-pyodide-*` caches.
+
+          ## Application example
+
+          ```python
+          from night import Night
+
+          app = Night()
+
+          @app.get("/")
+          def index():
+              return {"hello": "browser"}
+          ```
+
+          Fluent registration works too:
+
+          ```python
+          app.get("/health", lambda: {"ok": True})
+          ```
+
+          ## Local debug page
+
+          From the browser demo directory:
+
+          ```bash
+          python -m http.server 8000 -d deploy/browser-night
+          ```
+
+          Open `http://localhost:8000/debug.html`. Service workers require HTTP/HTTPS (localhost is allowed); opening the files directly with `file://` cannot use the persistent runtime cache.
+
+          ## Current limitations
+
+          The browser adapter currently buffers request and response bodies. WebSocket and streaming-response bridging are not yet implemented for Browser Night. Browser storage and network APIs also follow the browser's origin/CORS/security model rather than a normal server process.
+          '''))
+
+          Path("docs/ja/guides/browser.md").write_text(dedent('''\
+          # Browser Night
+
+          Browser Nightは、Pyodideを使ってNight application全体をブラウザーのタブ内で動かすruntimeです。Pythonをブラウザーに読み込み、`night.py`・`night_web.py`・`app.py`をPyodideのin-memory filesystemへ配置し、Web形式のrequestを `night_web.handle_web` 経由でNightのrouting coreへ渡します。
+
+          デプロイ版ではPython HTTP serverは不要です。
+
+          ## 構成
+
+          - `deploy/browser-night/404.html` — Browser Nightのshell兼SPA fallback。GitHub Pages deploy時には同じ内容を `index.html` にもコピーします。
+          - `deploy/browser-night/app.py` — Pyodide内で実行するNight app。
+          - `deploy/browser-night/debug.html` — local開発用のrequest console。
+          - `deploy/browser-night/sw.js` — Pyodide runtimeの永続cache。
+          - `night_web.py` — Web request/responseとNightをつなぐadapter。
+
+          ## Pyodide cache
+
+          cold startで最も重いPyodide runtimeを毎回取り直さないよう、起動前にService Workerを登録します。`sw.js` はCache Storageの `night-pyodide-v1` を使い、version付きjsDelivr Pyodide pathだけをcache-firstで処理します。
+
+          そのため `pyodide.mjs`、WebAssembly runtime、package index、`sqlite3` など一度読み込んだpackageを次回以降に再利用できます。初回はnetwork accessが必要です。またブラウザーのstorage evictionやprivate modeではcacheが保持されない場合があります。
+
+          Service Workerがcacheするのはversion付きPyodide assetだけです。Night本体や `app.py` はこの大容量cacheへ固定しないため、framework/app更新時にPyodide cacheまで消す必要はありません。cache仕様を変える場合は `sw.js` のcache名を上げると、activate時に古い `night-pyodide-*` cacheを削除します。
+
+          ## 例
+
+          ```python
+          from night import Night
+
+          app = Night()
+          app.get("/", lambda: {"hello": "browser"})
+          ```
+
+          ## localで試す
+
+          ```bash
+          python -m http.server 8000 -d deploy/browser-night
+          ```
+
+          `http://localhost:8000/debug.html` を開きます。Service WorkerはHTTP/HTTPSが必要です（localhostは利用可能）。`file://` 直開きでは永続Pyodide cacheは使えません。
+
+          ## 現在の制限
+
+          Browser adapterは現在request/response bodyをbufferします。WebSocketとstreaming responseのbrowser bridgeは未実装です。またnetwork/storage APIは通常のserver processではなくbrowserのorigin/CORS/security modelに従います。
+          '''))
+
+          Path("deploy/browser-night/sw.js").write_text(dedent('''\
+          const CACHE_PREFIX = 'night-pyodide-';
+          const CACHE_NAME = 'night-pyodide-v1';
+
+          function isPyodideAsset(request) {
+            if (request.method !== 'GET') return false;
+            const url = new URL(request.url);
+            return url.origin === 'https://cdn.jsdelivr.net' && /^\\/pyodide\\/v[^/]+\\/full\\//.test(url.pathname);
+          }
+
+          self.addEventListener('install', () => self.skipWaiting());
+
+          self.addEventListener('activate', event => {
+            event.waitUntil((async () => {
+              const names = await caches.keys();
+              await Promise.all(names
+                .filter(name => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
+                .map(name => caches.delete(name)));
+              await self.clients.claim();
+            })());
+          });
+
+          self.addEventListener('fetch', event => {
+            if (!isPyodideAsset(event.request)) return;
+            event.respondWith((async () => {
+              const cache = await caches.open(CACHE_NAME);
+              const cached = await cache.match(event.request);
+              if (cached) return cached;
+
+              const response = await fetch(event.request);
+              if (response.ok) {
+                event.waitUntil(cache.put(event.request, response.clone()));
+              }
+              return response;
+            })());
+          });
+          '''))
+
+          # Register the service worker before Pyodide boot in both UIs.
+          replace_once(
+              "deploy/browser-night/404.html",
+              "async function loadPy(){for(const version of PYODIDE_VERSIONS)",
+              "async function enablePyodideCache(){if(!('serviceWorker' in navigator)||location.protocol==='file:')return false;try{await navigator.serviceWorker.register(new URL('sw.js',ASSET_BASE),{scope:ASSET_BASE.pathname});await navigator.serviceWorker.ready;if(!navigator.serviceWorker.controller){await Promise.race([new Promise(resolve=>navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true})),new Promise(resolve=>setTimeout(resolve,1500))])}return Boolean(navigator.serviceWorker.controller)}catch(error){console.warn('[Browser Night] Pyodide cache unavailable',error);return false}}\nasync function loadPy(){for(const version of PYODIDE_VERSIONS)",
+          )
+          replace_once(
+              "deploy/browser-night/404.html",
+              "async function boot(){pyodide=await loadPy();",
+              "async function boot(){const cacheReady=await enablePyodideCache();setStatus(cacheReady?'Pyodide cache ready…':'Loading Pyodide…');pyodide=await loadPy();",
+          )
+
+          replace_once(
+              "deploy/browser-night/debug.html",
+              "async function loadCompatiblePyodide(){",
+              dedent('''\
+              async function enablePyodideCache(){
+                if(!('serviceWorker' in navigator) || location.protocol === 'file:') return false;
+                try{
+                  await navigator.serviceWorker.register(new URL('sw.js', APP_BASE), {scope: APP_BASE.pathname});
+                  await navigator.serviceWorker.ready;
+                  if(!navigator.serviceWorker.controller){
+                    await Promise.race([
+                      new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, {once:true})),
+                      new Promise(resolve => setTimeout(resolve, 1500)),
+                    ]);
+                  }
+                  return Boolean(navigator.serviceWorker.controller);
+                }catch(error){
+                  console.warn('[Browser Night] Pyodide cache unavailable', error);
+                  return false;
+                }
+              }
+
+              async function loadCompatiblePyodide(){
+              '''),
+          )
+          replace_once(
+              "deploy/browser-night/debug.html",
+              "try {\n  pyodide = await loadCompatiblePyodide();",
+              "try {\n  const cacheReady = await enablePyodideCache();\n  status.textContent = cacheReady ? 'Pyodide cache ready — loading runtime…' : 'Loading Pyodide without persistent cache…';\n  pyodide = await loadCompatiblePyodide();",
+          )
+
+          # Accurate Browser Night README.
+          Path("deploy/browser-night/README.md").write_text(dedent('''\
+          # Night in the Browser
+
+          Run a Night app entirely inside the browser with Pyodide.
+
+          ## Files
+
+          - `404.html` is the Browser Night shell and GitHub Pages SPA fallback. The Pages workflow also copies it to `index.html` so the project root loads with HTTP 200.
+          - `app.py` is the Night application loaded into Pyodide.
+          - `debug.html` is a small local request console.
+          - `sw.js` persistently caches versioned Pyodide CDN assets in Cache Storage.
+
+          The shell bridges Web-style requests into Night through `night_web.handle_web`.
+
+          ## Pyodide cache
+
+          Browser Night registers `sw.js` before starting Pyodide. The worker uses the versioned cache `night-pyodide-v1` and cache-first handling only for `https://cdn.jsdelivr.net/pyodide/v*/full/*` requests. After a cold first load, Pyodide's JavaScript, WebAssembly, metadata, and loaded packages such as `sqlite3` can be reused by later visits.
+
+          Night source files and `app.py` are intentionally not pinned in that cache, so framework/application updates keep their normal behavior. Browser storage can still be evicted by the browser or cleared by the user.
+
+          ## Run locally
+
+          ```bash
+          python -m http.server 8000 -d deploy/browser-night
+          ```
+
+          Open `http://localhost:8000/debug.html`.
+
+          Service workers require HTTP/HTTPS; `file://` does not support the persistent Pyodide cache.
+
+          ## Example app
+
+          ```python
+          from night import Night
+
+          app = Night()
+          app.get("/", lambda: {"hello": "browser"})
+          ```
+
+          The browser adapter currently buffers request and response bodies. Browser WebSockets and streaming responses are not yet bridged.
+          '''))
+
+          # GitHub Pages: root uses index.html; nested Night routes still use 404 fallback.
+          replace_once(
+              ".github/workflows/pages-browser-night.yml",
+              "          cp -R deploy/browser-night/. _site/\n",
+              "          cp -R deploy/browser-night/. _site/\n          cp deploy/browser-night/404.html _site/index.html\n",
+          )
+
+          # Static regression checks for the browser assets and deployment wiring.
+          Path("tests/test_browser_night_assets.py").write_text(dedent('''\
+          from pathlib import Path
+
+          ROOT = Path(__file__).parent.parent
+          BROWSER = ROOT / "deploy" / "browser-night"
+
+
+          def test_pyodide_service_worker_is_versioned_and_cache_first():
+              worker = (BROWSER / "sw.js").read_text()
+              assert "night-pyodide-v1" in worker
+              assert "cdn.jsdelivr.net" in worker
+              assert "/pyodide" in worker
+              assert "cache.match(event.request)" in worker
+              assert "cache.put(event.request, response.clone())" in worker
+              assert "clients.claim" in worker
+
+
+          def test_browser_shells_register_pyodide_cache():
+              for name in ("404.html", "debug.html"):
+                  html = (BROWSER / name).read_text()
+                  assert "serviceWorker.register" in html
+                  assert "sw.js" in html
+                  assert "enablePyodideCache" in html
+
+
+          def test_pages_builds_root_index_and_keeps_404_fallback():
+              workflow = (ROOT / ".github" / "workflows" / "pages-browser-night.yml").read_text()
+              assert "cp -R deploy/browser-night/. _site/" in workflow
+              assert "cp deploy/browser-night/404.html _site/index.html" in workflow
+              assert (BROWSER / "404.html").exists()
+
+
+          def test_release_version_is_0_1_2():
+              pyproject = (ROOT / "pyproject.toml").read_text()
+              assert 'version = "0.1.2"' in pyproject
+          '''))
+          PY
+
+      - name: Install release tooling
+        run: python -m pip install --upgrade pip pytest build twine
+
+      - name: Check target version is unused on PyPI
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          target = "0.1.2"
+          try:
+              with urllib.request.urlopen("https://pypi.org/pypi/all-night/json", timeout=20) as response:
+                  data = json.load(response)
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  data = {"releases": {}}
+              else:
+                  raise
+          if target in data.get("releases", {}):
+              raise SystemExit(f"all-night {target} already exists on PyPI")
+          print(f"all-night {target} is available")
+          PY
+
+      - name: Run tests
+        run: python -m pytest -q tests
+
+      - name: Build and check distributions
+        run: |
+          rm -rf dist build *.egg-info
+          python -m build
+          python -m twine check dist/*
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit release preparation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add pyproject.toml README.md SKILL.md docs deploy/browser-night .github/workflows/pages-browser-night.yml tests/test_browser_night_assets.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Prepare 0.1.2 browser release"
+          git push origin HEAD:release/0.1.2-browser-docs
