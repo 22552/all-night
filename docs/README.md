@@ -7,7 +7,8 @@ Night is a single-file ASGI framework for Python 3.11+. The public package is `a
 ## Start here
 
 - [Quickstart](getting-started/quickstart.md) — install from PyPI, run the CLI or an ASGI server, and write a first application
-- [HTTP applications](guides/http.md) — routing, requests, responses, forms, files, validation, cookies, and streaming
+- [HTTP applications](guides/http.md) — routing, fluent registration, requests, responses, gzip file handlers, forms, validation, cookies, and streaming
+- [Browser Night](guides/browser.md) — run Night inside a browser with Pyodide and persistent runtime caching
 - [Model Context Protocol](guides/mcp.md) — expose Night RPC methods as stateless MCP 2026-07-28 tools
 - [Cloudflare Python Workers](guides/cloudflare-workers.md) — `cloudflare_fetch`, Workers RPC, Service Bindings, KV, and deployment notes
 - [Security](guides/security.md) — sessions, cookies, CSRF, and trusted Lua macros
@@ -32,6 +33,7 @@ Routing work is front-loaded at registration time: Night indexes static routes, 
 
 - **Cloudflare Python Workers** — Night provides a direct Request/Response bridge and Workers RPC integration.
 - **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; see the Vercel deployment template under `deploy/vercel-night`.
+- **Browser / Pyodide** — Browser Night executes the same application locally in the tab through `night_web`; a service worker caches versioned Pyodide runtime assets between visits.
 - **MCP** — the stateless MCP endpoint is an ordinary Night HTTP route, so the same MCP server can run under standard ASGI, Cloudflare Workers, or Vercel Functions.
 
 ## Cloudflare note
@@ -42,6 +44,6 @@ Python Workers are currently beta and require the `python_workers` compatibility
 
 ## Version
 
-The current PyPI release documented here is **all-night 0.1.1** and requires Python **3.11+**. Features on `main` can be newer than the latest package release.
+The current PyPI release documented here is **all-night 0.1.2** and requires Python **3.11+**. Features on `main` can be newer than the latest package release.
 
 For coding agents, see the repository-level [`SKILL.md`](../SKILL.md).

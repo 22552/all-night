@@ -4,20 +4,28 @@ Run a Night app entirely inside the browser with Pyodide.
 
 ## Files
 
-- `index.html` boots Pyodide and bridges Web-style requests into Night through `night_web.handle_web`.
-- `app.py` is the Night application you edit.
+- `404.html` is the Browser Night shell and GitHub Pages SPA fallback. The Pages workflow also copies it to `index.html` so the project root loads with HTTP 200.
+- `app.py` is the Night application loaded into Pyodide.
+- `debug.html` is a small local request console.
+- `sw.js` persistently caches versioned Pyodide CDN assets in Cache Storage.
+
+The shell bridges Web-style requests into Night through `night_web.handle_web`.
+
+## Pyodide cache
+
+Browser Night registers `sw.js` before starting Pyodide. The worker uses the versioned cache `night-pyodide-v1` and cache-first handling only for `https://cdn.jsdelivr.net/pyodide/v*/full/*` requests. After a cold first load, Pyodide's JavaScript, WebAssembly, metadata, and loaded packages such as `sqlite3` can be reused by later visits.
+
+Night source files and `app.py` are intentionally not pinned in that cache, so framework/application updates keep their normal behavior. Browser storage can still be evicted by the browser or cleared by the user.
 
 ## Run locally
-
-Serve this directory with any static HTTP server, for example:
 
 ```bash
 python -m http.server 8000 -d deploy/browser-night
 ```
 
-Then open `http://localhost:8000`.
+Open `http://localhost:8000/debug.html`.
 
-Opening `index.html` directly with `file://` is not recommended because browsers restrict module and fetch access from local files.
+Service workers require HTTP/HTTPS; `file://` does not support the persistent Pyodide cache.
 
 ## Example app
 
@@ -25,12 +33,7 @@ Opening `index.html` directly with `file://` is not recommended because browsers
 from night import Night
 
 app = Night()
-
-@app.get("/")
-def index():
-    return {"hello": "browser"}
+app.get("/", lambda: {"hello": "browser"})
 ```
 
-The demo downloads `night.py` and `night_web.py`, loads `app.py` into Pyodide's in-memory filesystem, and executes requests without a Python server.
-
-This adapter currently buffers request and response bodies. Browser WebSockets and streaming responses are not yet bridged.
+The browser adapter currently buffers request and response bodies. Browser WebSockets and streaming responses are not yet bridged.
