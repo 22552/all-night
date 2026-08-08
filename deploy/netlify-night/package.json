@@ -2,10 +2,19 @@
   "name": "night-netlify-example",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "prepare": "node scripts/prepare.mjs"
+    "prepare": "node scripts/prepare.mjs",
+    "build:functions": "netlify functions:build --src netlify/functions --functions .netlify/functions",
+    "dev": "netlify dev"
   },
   "dependencies": {
     "pyodide": "314.0.3"
+  },
+  "devDependencies": {
+    "@netlify/functions": "5.3.0",
+    "netlify-cli": "27.0.1"
   }
 }
