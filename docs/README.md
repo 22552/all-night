@@ -1,59 +1,154 @@
 # Night documentation
 
-Night is a single-file ASGI framework for Python 3.11+. The public package is `all-night`; applications import the `night` module. Optional integrations such as MCP live beside the core so `night.py` itself stays dependency-free.
+Night is a tiny, single-file ASGI framework for Python **3.11+**. The PyPI package is `all-night`; applications import the `night` module.
+
+The normal CPython core stays dependency-free. Optional integrations such as Uvicorn, GraphQL, Lua, Cloudflare Workers, MCP, Pyodide runtimes, and Midnight live around that core instead of becoming required dependencies.
 
 日本語版は [日本語ドキュメント](ja/README.md) を参照してください。
 
 ## Start here
 
-- [Quickstart](getting-started/quickstart.md) — install from PyPI, run the CLI or an ASGI server, and write a first application
-- [HTTP applications](guides/http.md) — routing, fluent registration, requests, responses, gzip file handlers, forms, validation, cookies, and streaming
-- [Templates](guides/templates.md) — `${{ ... }}` interpolation, if/for/include, restricted expressions, filters, and extension hooks
-- [Node.js runtime](guides/node.md) — officially supported Node 22/24 hosting through Pyodide and Web-standard Request/Response
-- [Midnight: Python ↔ HTML bridge](guides/midnight.md)
-- [Midnight forms](guides/midnight-forms.md) — live `input`/`change`/`submit` snapshots with `FormSnapshot`, `getone()`, and `getlist()`
-- [Midnight components + hot reload](guides/midnight-components.md) — scoped reusable UI and stdlib-only WebSocket development reload
-- [Browser Night](guides/browser.md) — run Night inside a browser with Pyodide and persistent runtime caching
-- [Model Context Protocol](guides/mcp.md) — expose Night RPC methods as stateless MCP 2026-07-28 tools
-- [Cloudflare Python Workers](guides/cloudflare-workers.md) — `cloudflare_fetch`, Workers RPC, Service Bindings, KV, and deployment notes
-- [Security](guides/security.md) — sessions, cookies, CSRF, and trusted Lua macros
-- [Realtime](guides/realtime.md) — SSE, WebSocket, lifespan, and streaming
+New to Night? Use this order:
+
+1. [Quickstart](getting-started/quickstart.md) — install Night, create `app.py`, run it, and test it
+2. [HTTP applications](guides/http.md) — routing, requests, responses, files, forms, validation, cookies, and streaming
+3. [Application and routing reference](reference/application.md) — detailed `Night` and routing APIs
+4. [Request and response reference](reference/request-response.md) — request parsing and response classes
+5. [Tooling and CLI](reference/tooling.md) — CLI behavior, TestClient, middleware, RPC, MCP, and extensions
+6. [Deployment](operations/deployment.md) — choose a runtime or hosting target
+
+## What Night includes
+
+### HTTP and routing
+
+- decorator and fluent route registration
+- static and dynamic routes
+- typed path parameters
+- automatic `HEAD` and `OPTIONS`
+- named routes and URL generation
+- middleware, before/after hooks, and error handlers
+- JSON, text, HTML, redirects, streaming, and file responses
+- forms and multipart uploads
+- cookies and signed sessions
+- CSRF helpers
+- typed body validation
+- static-file routing
+
+Read: [HTTP applications](guides/http.md) · [Application reference](reference/application.md) · [Request/Response reference](reference/request-response.md)
+
+### Realtime
+
+- Server-Sent Events
+- WebSocket routes
+- ASGI lifespan startup/shutdown hooks
+- streaming responses
+
+Read: [Realtime](guides/realtime.md)
+
+### Templates and browser UI
+
+- `${{ ... }}` template interpolation
+- `if`, `for`, and `include`
+- restricted expressions and filters
+- Midnight Python ↔ HTML bridge
+- form snapshots
+- reusable Midnight components
+- development hot reload
+
+Read: [Templates](guides/templates.md) · [Midnight](guides/midnight.md) · [Midnight forms](guides/midnight-forms.md) · [Midnight components](guides/midnight-components.md)
+
+### Data and APIs
+
+- lightweight SQLite ORM
+- JSON-RPC 2.0 registry
+- OpenAPI generation
+- stateless MCP tool exposure through `night_mcp`
+- Cloudflare Workers RPC / Service Binding bridge
+
+Read: [SQLite ORM](reference/orm.md) · [Tooling / RPC](reference/tooling.md) · [MCP](guides/mcp.md)
+
+## Runtime and deployment map
+
+Night can keep the same application model across several runtimes:
+
+| Runtime | How Night runs | Guide |
+| --- | --- | --- |
+| CPython / ASGI | Standard ASGI application | [Quickstart](getting-started/quickstart.md) |
+| Vercel Functions | Direct ASGI `app` | [Vercel](operations/vercel.md) |
+| Cloudflare Python Workers | `cloudflare_fetch()` request bridge | [Cloudflare Workers](guides/cloudflare-workers.md) |
+| Node.js 22 / 24 | Pyodide + `night_node.mjs` | [Node.js](guides/node.md) |
+| Netlify Functions | Node adapter + Web Request/Response | [Netlify](operations/netlify.md) |
+| Browser | Pyodide + `night_web` inside the tab | [Browser Night](guides/browser.md) |
+
+See [Deployment notes](operations/deployment.md) for the broader deployment overview.
+
+## Browser Night
+
+[Browser Night](guides/browser.md) runs a Night application entirely inside a browser tab using Pyodide. The same `night_web` request bridge is also used by the portable Web runtime path.
+
+The repository's GitHub Pages deployment currently publishes the **Browser Night demo**, not this Markdown documentation tree. The documentation source of truth is `docs/` in the repository.
+
+## CLI
+
+Installing `all-night` exposes `night`.
+
+```bash
+night run app.py
+night run app.py --host 0.0.0.0 --port 8080
+```
+
+The current 0.1.4 implementation also contains `night routes` and `night shell`, but they do not currently accept an application path. Older docs that showed `night routes app.py` or `night shell app.py` were incorrect.
+
+Read the exact current behavior in [Tooling and CLI](reference/tooling.md).
 
 ## Reference
 
 - [Application and routing](reference/application.md)
 - [Request and response API](reference/request-response.md)
 - [SQLite ORM](reference/orm.md)
-- [CLI, testing, RPC, and extensions](reference/tooling.md)
-- [Deployment notes](operations/deployment.md)
+- [CLI, testing, RPC, MCP, and extensions](reference/tooling.md)
+
+## Guides
+
+- [HTTP applications](guides/http.md)
+- [Templates](guides/templates.md)
+- [Realtime](guides/realtime.md)
+- [Security](guides/security.md)
+- [Midnight](guides/midnight.md)
+- [Midnight forms](guides/midnight-forms.md)
+- [Midnight components + hot reload](guides/midnight-components.md)
+- [Browser Night](guides/browser.md)
+- [Node.js runtime](guides/node.md)
+- [MCP](guides/mcp.md)
+- [Cloudflare Python Workers](guides/cloudflare-workers.md)
+
+## Operations
+
+- [Deployment overview](operations/deployment.md)
 - [Vercel Functions](operations/vercel.md)
 - [Netlify Functions](operations/netlify.md)
 
 ## Runtime model
 
-Night keeps its normal CPython core dependency-free. Optional integrations such as `uvicorn`, `graphql-core`, `lupa`, Cloudflare's `workers-runtime-sdk`, and the bundled `night_mcp` extension are installed or imported only when needed.
-
-Routing work is front-loaded at registration time: Night indexes static routes, specializes common dynamic routes, classifies endpoint call shapes, and compiles route-specific invokers. Request-time routing therefore avoids linear scans for the common route shapes used by REST APIs.
+Routing work is front-loaded at registration time. Night indexes static routes, specializes common dynamic routes, classifies endpoint call shapes, and compiles route-specific invokers. Request-time routing therefore avoids linear scans for common route shapes used by REST APIs.
 
 The portable Web path keeps transport-specific work outside that routing core. Node.js and Netlify use `night_node.mjs` + Pyodide + `night_web`; Browser Night uses the same `night_web` request bridge inside the tab.
 
-## Serverless and edge
+## Optional dependencies
 
-- **Cloudflare Python Workers** — Night provides a direct Request/Response bridge and Workers RPC integration.
-- **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; see the Vercel deployment template under `deploy/vercel-night`.
-- **Node.js 22 / 24** — officially tested Node runtime through `night_node.mjs` and Pyodide.
-- **Netlify Functions / Node 24** — officially tested modern Request/Response Function wrapper; see `deploy/netlify-night`.
-- **Browser / Pyodide** — Browser Night executes the same application locally in the tab through `night_web`; a service worker caches versioned Pyodide runtime assets between visits.
-- **MCP** — the stateless MCP endpoint is an ordinary Night HTTP route, so the same MCP server can run under standard ASGI, Cloudflare Workers, Vercel Functions, or other adapters that carry normal Night HTTP routes.
+The framework core has no required runtime dependencies on normal CPython. Install optional packages only for the features you use. Examples include:
 
-## Cloudflare note
+- `uvicorn` — serving with `night run` or Uvicorn directly
+- `graphql-core` — GraphQL extension
+- `lupa` — Lua-backed features
+- `workers-runtime-sdk` — Cloudflare Workers integration
 
-Cloudflare Python Workers run on Pyodide inside Workers isolates. Cloudflare performs top-level Python imports and initialization during deployment and snapshots WebAssembly linear memory to reduce cold-start work. Night's Workers integration is designed around that runtime: application and route registration stay at module scope, while request state remains request-scoped.
-
-Python Workers are currently beta and require the `python_workers` compatibility flag. Check Cloudflare's current documentation when changing compatibility dates, flags, runtime SDK APIs, or deployment tooling.
+`night_mcp` is bundled with `all-night` but intentionally kept outside `night.py`.
 
 ## Version
 
-The current PyPI release documented here is **all-night 0.1.4** and requires Python **3.11+**. This release includes Midnight as bundled modules: `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`. Midnight is part of `all-night`, not a separate PyPI distribution.
+The current PyPI release documented here is **all-night 0.1.4**, requiring Python **3.11+**.
+
+Midnight is bundled as part of `all-night` through the modules `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`; it is not a separate PyPI distribution.
 
 For coding agents, see the repository-level [`SKILL.md`](../SKILL.md).
