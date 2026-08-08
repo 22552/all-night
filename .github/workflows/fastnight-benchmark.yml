@@ -46,7 +46,7 @@ jobs:
               return {'id': user_id}
           PY
 
-      - name: Run benchmark
+      - name: Run HTTP benchmark
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +80,84 @@ jobs:
           bench night bench_night 8011
           bench fastnight bench_fastnight 8012
 
-      - name: Summarize
+      - name: Run Python microbenchmarks
+        run: |
+          python - <<'PY' | tee bench-results/python-microbench.txt
+          import gc
+          import statistics
+          import time
+          from night import Night, TemplateEngine
+          from fastnight import FastNight, FastTemplateEngine
+
+          TEMPLATE = '''<h1>${{ title }}</h1>
+          ${% if user.admin %}<b>${{ user.name }}</b>${% else %}${{ user.name }}${% endif %}
+          <ul>${% for item in items %}<li>${{ item }}</li>${% endfor %}</ul>'''
+          CONTEXT = {
+              'title': 'Night',
+              'user': {'name': 'alice', 'admin': True},
+              'items': list(range(10)),
+          }
+
+          def measure(fn, repeat=7):
+              values=[]
+              for _ in range(repeat):
+                  gc.collect()
+                  start=time.perf_counter()
+                  fn()
+                  values.append(time.perf_counter()-start)
+              return statistics.median(values)
+
+          normal_engine=TemplateEngine()
+          fast_engine=FastTemplateEngine()
+          normal_template=normal_engine.compile(TEMPLATE)
+          fast_template=fast_engine.compile(TEMPLATE)
+
+          # Warm caches and validate equivalent output first.
+          expected=normal_template.render(CONTEXT)
+          actual=fast_template.render(CONTEXT)
+          assert actual == expected, (expected, actual)
+
+          N=10000
+          t_normal=measure(lambda: [normal_template.render(CONTEXT) for _ in range(N)])
+          t_fast=measure(lambda: [fast_template.render(CONTEXT) for _ in range(N)])
+          print('## template render')
+          print(f'night: {N/t_normal:.1f} renders/s ({t_normal:.4f}s)')
+          print(f'fastnight: {N/t_fast:.1f} renders/s ({t_fast:.4f}s)')
+          print(f'gain: {(t_normal/t_fast-1)*100:+.1f}%')
+
+          # Register many dynamic routes. Night rebuilds its unused combined
+          # matcher after each addition; FastNight intentionally skips it.
+          ROUTES=500
+          def build_normal():
+              app=Night()
+              for i in range(ROUTES):
+                  app.get(f'/r{i}/<int:value>')(lambda value: value)
+          def build_fast():
+              app=FastNight()
+              for i in range(ROUTES):
+                  app.get(f'/r{i}/<int:value>')(lambda value: value)
+
+          r_normal=measure(build_normal, repeat=5)
+          r_fast=measure(build_fast, repeat=5)
+          print('## dynamic route registration')
+          print(f'night: {ROUTES/r_normal:.1f} routes/s ({r_normal:.4f}s)')
+          print(f'fastnight: {ROUTES/r_fast:.1f} routes/s ({r_fast:.4f}s)')
+          print(f'gain: {(r_normal/r_fast-1)*100:+.1f}%')
+
+          # Repeated Request.state access benchmark.
+          async def receive():
+              return {'type':'http.request','body':b'','more_body':False}
+          async def send(event):
+              pass
+          from night import Request
+          req=Request({'type':'http','state':{}}, receive, send)
+          S=1_000_000
+          state_time=measure(lambda: [req.state for _ in range(S)], repeat=5)
+          print('## Request.state repeated access (FastNight process patch active)')
+          print(f'{S/state_time:.1f} accesses/s ({state_time:.4f}s)')
+          PY
+
+      - name: Summarize HTTP
         run: |
           python - <<'PY'
           import glob, json, statistics
