@@ -1,0 +1,181 @@
+name: Apply route/template perf patch
+
+on:
+  push:
+    branches:
+      - agent/perf-route-template
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/perf-route-template
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Apply focused performance patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('night.py')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, marker):
+              global text
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif marker in text:
+                  print(f'already applied: {marker}')
+              else:
+                  raise SystemExit(f'patch anchor not found: {marker}')
+
+          # Routing: the combined dynamic matcher is never read by dispatch.
+          replace_once(
+              '        self._dynamic_method_matchers: dict[str, tuple[re.Pattern, list[Route]]] = {}\n',
+              '',
+              '_dynamic_method_matchers removed',
+          )
+          replace_once(
+              '                self._rebuild_dynamic_matcher(method)\n',
+              '',
+              '_rebuild_dynamic_matcher call removed',
+          )
+          text, count = re.subn(
+              r'\n    def _rebuild_dynamic_matcher\(self, method: str\) -> None:\n.*?(?=\n    def enable_css\()',
+              '',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count == 0 and 'def _rebuild_dynamic_matcher' in text:
+              raise SystemExit('failed to remove _rebuild_dynamic_matcher')
+
+          # TemplateEngine: one expression cache per engine.
+          replace_once(
+              '        self._cache: dict[str, tuple[int, int, Template]] = {}\n',
+              '        self._cache: dict[str, tuple[int, int, Template]] = {}\n'
+              '        self._expression_cache: dict[str, tuple[str, ast.AST, tuple[str, ...]]] = {}\n',
+              '_expression_cache:',
+          )
+
+          # Common no-filter expressions avoid the Python character parser.
+          replace_once(
+              '    def _split_filters(self, expression: str) -> list[str]:\n'
+              '        parts, current = [], []\n',
+              '    def _split_filters(self, expression: str) -> list[str]:\n'
+              '        if "|" not in expression:\n'
+              '            expression = expression.strip()\n'
+              '            return [expression] if expression else []\n'
+              '        parts, current = [], []\n',
+              'if "|" not in expression:',
+          )
+
+          old_evaluate = '''    def evaluate(self, expression: str, context: t.Mapping[str, t.Any]) -> tuple[str, t.Any]:
+        pipeline = self._split_filters(expression)
+        if not pipeline:
+            return "", ""
+        base = pipeline[0]
+        value = _TemplateExpression(context).evaluate(base)
+        for name in pipeline[1:]:
+            fn = self.filters.get(name)
+            if fn is None:
+                raise TemplateError(f"Unknown template filter: {name}")
+            value = fn(value)
+        return base, value
+'''
+          new_evaluate = '''    def _compile_expression(self, expression: str) -> tuple[str, ast.AST, tuple[str, ...]]:
+        cached = self._expression_cache.get(expression)
+        if cached is not None:
+            return cached
+        pipeline = self._split_filters(expression)
+        if not pipeline:
+            compiled = ("", ast.Constant(value=""), ())
+            self._expression_cache[expression] = compiled
+            return compiled
+        base = pipeline[0]
+        try:
+            node = ast.parse(base, mode="eval").body
+        except SyntaxError as exc:
+            raise TemplateError(f"Invalid template expression: {base!r}") from exc
+        compiled = (base, node, tuple(pipeline[1:]))
+        self._expression_cache[expression] = compiled
+        return compiled
+
+    def _warm_nodes(self, nodes) -> None:
+        for node in nodes:
+            kind = node[0]
+            if kind == "expr":
+                self._compile_expression(node[1])
+            elif kind == "if":
+                branches, otherwise = node[1], node[2]
+                for condition, body in branches:
+                    self._compile_expression(condition)
+                    self._warm_nodes(body)
+                self._warm_nodes(otherwise)
+            elif kind == "for":
+                _targets, expression, body, otherwise = node[1:]
+                self._compile_expression(expression)
+                self._warm_nodes(body)
+                self._warm_nodes(otherwise)
+            elif kind == "include":
+                self._compile_expression(node[1])
+
+    def evaluate(self, expression: str, context: t.Mapping[str, t.Any]) -> tuple[str, t.Any]:
+        base, node, filters = self._compile_expression(expression)
+        if not base:
+            return "", ""
+        value = _TemplateExpression(context).visit(node)
+        for name in filters:
+            fn = self.filters.get(name)
+            if fn is None:
+                raise TemplateError(f"Unknown template filter: {name}")
+            value = fn(value)
+        return base, value
+'''
+          replace_once(old_evaluate, new_evaluate, 'def _compile_expression(')
+
+          old_compile = '''    def compile(self, source: str, *, name: str = "<string>") -> Template:
+        nodes, _, _ = self._parse_nodes(self._tokenize(source))
+        return Template(self, str(source), tuple(nodes), name)
+'''
+          new_compile = '''    def compile(self, source: str, *, name: str = "<string>") -> Template:
+        nodes, _, _ = self._parse_nodes(self._tokenize(source))
+        frozen_nodes = tuple(nodes)
+        self._warm_nodes(frozen_nodes)
+        return Template(self, str(source), frozen_nodes, name)
+'''
+          replace_once(old_compile, new_compile, 'self._warm_nodes(frozen_nodes)')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Install test dependencies
+        run: python -m pip install -U pytest pytest-asyncio
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Commit patch
+        run: |
+          if git diff --quiet -- night.py; then
+            echo 'No night.py changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add night.py
+          git commit -m 'optimize route registration and template rendering'
+          git push origin HEAD:agent/perf-route-template
