@@ -192,6 +192,26 @@ class Midnight:
     def on_event(self, name: str):
         return self.on(f"custom:{name}")
 
+    def _on_lifecycle(self, name: str, fn: Handler | None = None):
+        decorator = self.on_event(f"__lifecycle_{name}")
+        return decorator if fn is None else decorator(fn)
+
+    def on_hide(self, fn: Handler | None = None):
+        """Handle the page becoming hidden (best effort)."""
+        return self._on_lifecycle("hide", fn)
+
+    def on_show(self, fn: Handler | None = None):
+        """Handle the page becoming visible again (best effort)."""
+        return self._on_lifecycle("show", fn)
+
+    def on_leave(self, fn: Handler | None = None):
+        """Handle ``pagehide`` before navigation/unload (best effort).
+
+        Do not rely on this hook to finish an async save during teardown. Use
+        :meth:`persist` to pre-register data for Beacon/keepalive delivery.
+        """
+        return self._on_lifecycle("leave", fn)
+
     def on_ws(self, event: str):
         event = str(event)
 
@@ -260,6 +280,52 @@ class Midnight:
         key = str(name)
         self.state[key] = value
         self._push("bind", name=key, value=value)
+
+    def persist(
+        self,
+        url: str,
+        data: t.Any = None,
+        *,
+        key: str = "default",
+        transport: str = "auto",
+        when: str = "leave",
+        headers: dict[str, str] | None = None,
+        content_type: str = "application/json",
+    ) -> None:
+        """Pre-register a small payload for reliable page-lifecycle delivery.
+
+        ``transport='auto'`` prefers ``navigator.sendBeacon`` when custom
+        headers are not required and falls back to ``fetch(..., keepalive=True)``.
+        ``when`` may be ``leave``, ``hide`` or ``now``. Reusing ``key`` replaces
+        the previously registered payload.
+        """
+        transport = str(transport).lower()
+        when = str(when).lower()
+        if transport not in {"auto", "beacon", "fetch"}:
+            raise ValueError("transport must be 'auto', 'beacon', or 'fetch'")
+        if when not in {"leave", "hide", "now"}:
+            raise ValueError("when must be 'leave', 'hide', or 'now'")
+        normalized_headers = {str(k): str(v) for k, v in (headers or {}).items()}
+        if transport == "beacon" and normalized_headers:
+            raise ValueError("Beacon transport cannot set custom request headers")
+        self._push(
+            "persist",
+            url=str(url),
+            data=data,
+            key=str(key),
+            transport=transport,
+            when=when,
+            headers=normalized_headers,
+            content_type=str(content_type),
+        )
+
+    def cancel_persist(self, key: str = "default") -> None:
+        """Remove a previously registered lifecycle payload."""
+        self._push("persist_cancel", key=str(key))
+
+    def flush_persist(self, key: str | None = None) -> None:
+        """Ask the browser to send registered persistence data immediately."""
+        self._push("persist_flush", key=None if key is None else str(key))
 
     def render_template_string(self, source: str, **context: t.Any) -> HTMLResponse:
         data = {**self.state, **context}
