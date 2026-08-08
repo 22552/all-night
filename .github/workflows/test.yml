@@ -32,3 +32,24 @@ jobs:
           cd deploy/cloudflare-night
           npm run build
           python -m py_compile src/night.py src/entry.py
+
+  node-runtime:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install Node runtime dependencies
+        run: npm install --ignore-scripts
+      - name: Run Night Node runtime tests
+        run: npm run test:node
+      - name: Build Netlify Night function
+        if: matrix.node-version == '24'
+        working-directory: deploy/netlify-night
+        run: |
+          npm install
+          npm run build:functions
