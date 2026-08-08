@@ -85,6 +85,58 @@ midnight.on("updated", detail => {
 })
 ```
 
+## 複数ユーザー / サーバーセッション
+
+Browser Nightではブラウザーの各タブがそれぞれ別のPyodide/Python runtimeを持つため、ユーザーは自然に分離されます。一方、通常のCPythonサーバーでは1つの`midnight`を複数クライアントが共有できるため、Midnightは`ContextVar`で選ばれる`MidnightSession`ごとに可変状態を分離します。
+
+イベントhandlerとsubscriptionは全ユーザーで共有し、`midnight.state`、テンプレートbinding、Python→HTMLのoutboxだけがsession-localになります。
+
+```python
+@midnight.on_event("rename")
+async def rename(event):
+    midnight.set("name", event["name"])
+    await do_something()
+    midnight.text("#name", midnight.state["name"])
+```
+
+サーバーadapterはイベントdispatch時に、接続や認証から得た安定したsession/connection IDを渡します。
+
+```python
+commands = await midnight.dispatch(
+    event,
+    session_id=trusted_connection_id,
+)
+
+ws_commands = await midnight.dispatch_ws(
+    ws_event,
+    session_id=trusted_connection_id,
+)
+```
+
+session bindingは`await`をまたいでも維持されるため、複数クライアントのasync handlerが同時に動いても別ユーザーのstateへ切り替わりません。
+
+dispatch外から特定ユーザーへ更新を送る場合は明示的にsessionをbindできます。
+
+```python
+with midnight.session(user_id):
+    midnight.set("unread", 3)
+    midnight.emit("notification", {"count": 3})
+```
+
+主なsession API:
+
+```python
+midnight.session_id
+midnight.current_session
+midnight.get_session("alice")
+midnight.session_ids()
+midnight.drop_session("alice")
+```
+
+一時的なconnection/sessionが完全に切断され、そのメモリ上stateが不要になったら`drop_session()`で破棄できます。標準のsession storeはprocess-localなので、複数process/複数instance構成では永続・共有すべきアプリ状態は通常のDB/session backendへ保存し、MidnightSessionは接続単位のUI stateとして扱います。
+
+重要: `session_id`はブラウザーから送られてきた任意値をそのまま信用せず、サーバー側の認証済みconnection/session情報から決定してください。
+
 ## WebSocket
 
 ```python
@@ -115,6 +167,9 @@ WebSocket event ┘                                  │
                                                   │ 構造化command
                                                   ▼
 HTML DOM / CustomEvent / WebSocket
+
+共有CPythonサーバー:
+connection/session ID -> ContextVar -> MidnightSession -> state + outbox
 ```
 
 同じブラウザータブ内のPythonとHTMLの通信には軽いdirect bridgeを使い、WebSocketは外部との双方向通信が必要な場合だけ使う構成です。
