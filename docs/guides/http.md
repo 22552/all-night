@@ -14,6 +14,21 @@ async def create_user(req):
 
 Available helpers are `get`, `post`, `put`, `patch`, `delete`, `query`, and `purge`. GET routes automatically answer HEAD. OPTIONS is generated with an `Allow` header.
 
+Routes can also be registered explicitly or fluently:
+
+```python
+def home():
+    return "home"
+
+def login():
+    return "login"
+
+app.add_route("GET", "/health", lambda: {"ok": True})
+app.get("/", home).post("/login", login)
+```
+
+Passing a handler directly returns the router/app, so route helpers can be chained. Calling `app.get("/path")` without a handler keeps the normal decorator form.
+
 Path converters are `str`, `int`, and `path`. Use `app.url_for("user", user_id=42)` to build named URLs.
 
 ## Reading input
@@ -57,5 +72,23 @@ Night validates required fields, primitive values, `Optional[T]`, nested datacla
 Returning a `dict` or `list` produces JSON; a `str` produces text. Use `jsonify`, `text`, `html`, `redirect`, `stream`, `send_file`, and `clear_client_storage` for explicit responses.
 
 `Response.set_cookie()` and `Response.delete_cookie()` support cookie attributes and multiple `Set-Cookie` headers.
+
+### Chainable file responses and gzip
+
+`send_file()` returns a lazy file handler. It can be returned from a route or registered directly:
+
+```python
+app.get("/manual", send_file("manual.pdf"))
+app.get("/data", send_file("data.json").gz())
+```
+
+`send_file(...).gz(level)` serves an HTTP gzip representation with `Content-Encoding: gzip` and `Vary: Accept-Encoding`. The compressed representation is stored in the OS temporary directory and reused using a cache key derived from source path, nanosecond mtime, source size, and gzip level. Changing the source naturally creates a new cached representation.
+
+Enable gzip as the default for Night file/static responses with `app.gz()`; use `.raw()` to opt an individual file out:
+
+```python
+app.gz(9).get("/data", send_file("data.json"))
+app.get("/raw", send_file("data.json").raw())
+```
 
 

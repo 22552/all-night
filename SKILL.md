@@ -12,7 +12,7 @@ Use this skill when working with the `all-night` PyPI package or the `22552/all-
 - Package: `all-night`
 - Core import: `night`
 - MCP extension import: `night_mcp`
-- Current documented PyPI release: `0.1.1`
+- Current documented PyPI release: `0.1.2`
 - Supported Python: `>=3.11`
 - Core architecture: single-file `night.py`
 - Normal CPython core: no required runtime dependencies

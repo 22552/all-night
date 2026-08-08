@@ -7,7 +7,8 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 ## はじめに
 
 - [クイックスタート](getting-started/quickstart.md) — PyPI からの導入、CLI / ASGI サーバー、最初のアプリ
-- [HTTPアプリケーション](guides/http.md) — ルーティング、Request/Response、フォーム、アップロード、検証
+- [HTTPアプリケーション](guides/http.md) — ルーティング、チェーン登録、Request/Response、gzipファイル配信、フォーム、検証
+- [Browser Night](guides/browser.md) — Pyodideでブラウザー内にNightを起動し、runtime assetを永続キャッシュ
 - [Model Context Protocol](guides/mcp.md) — Night RPCをstateless MCP 2026-07-28 toolとして公開
 - [Cloudflare Python Workers](guides/cloudflare-workers.md) — `cloudflare_fetch`、Workers RPC、Service Binding、KV、Edge運用
 - [セキュリティ](guides/security.md) — セッション、Cookie、CSRF、Lua macro
@@ -32,6 +33,7 @@ Night は Python 3.11+ 向けの、単一ファイルを中心にした ASGI Web
 
 - **Cloudflare Python Workers** — Workers Request/Response bridgeとWorkers RPCに対応。
 - **Vercel Functions** — Vercel Python runtimeからNightのASGI `app`を直接実行可能。
+- **Browser / Pyodide** — `night_web`を介して同じNight appをタブ内で実行。version付きPyodide assetはService Workerで再利用します。
 - **MCP** — 通常のNight HTTP routeなので、ASGI / Cloudflare / Vercelで同じMCP serverを動かせます。
 
 ## Cloudflareについて
@@ -42,6 +44,6 @@ Python Workers は現在 beta です。compatibility date / flag / runtime SDK �
 
 ## バージョン
 
-現在のPyPI releaseは **all-night 0.1.1 / Python 3.11+** です。`main` の機能は次回releaseまでPyPI版より新しい場合があります。
+現在のPyPI releaseは **all-night 0.1.2 / Python 3.11+** です。`main` の機能は次回releaseまでPyPI版より新しい場合があります。
 
 AIコーディングエージェント向けの作業指針はリポジトリ直下の [`SKILL.md`](../../SKILL.md) を参照してください。

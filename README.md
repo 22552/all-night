@@ -45,6 +45,7 @@ night run app.py
 - **MCP 2026-07-28** — the optional `night_mcp` module exposes the existing RPC registry as stateless `server/discover`, `tools/list`, and `tools/call` HTTP endpoints without adding runtime dependencies.
 - **Cloudflare Python Workers** — `Night.cloudflare_fetch()` bridges Workers Requests into Night, while `Night.cloudflare_rpc()` exposes the same `@app.rpc(...)` registry over Workers RPC/Service Bindings. Cloudflare-specific imports stay optional outside Workers.
 - **Vercel Functions** — Vercel's Python runtime accepts Night directly as an ASGI `app`; no request/response adapter is needed.
+- **Browser Night** — run Night entirely in a browser tab with Pyodide; a service worker persistently caches versioned Pyodide runtime assets after the first load.
 
 ## MCP
 
@@ -101,11 +102,26 @@ def index():
 
 A ready-to-copy template lives in [`deploy/vercel-night`](deploy/vercel-night). See the [Vercel deployment guide](docs/operations/vercel.md).
 
+## Browser Night
+
+Night can run entirely in the browser through Pyodide and the `night_web` adapter. No Python server is required: routes execute inside the tab and Web-style requests are bridged into the same Night application.
+
+```python
+from night import Night, send_file
+
+app = Night().gz()
+app.get("/hello", lambda: {"hello": "browser"})
+app.get("/data", send_file("data.json"))
+```
+
+The GitHub Pages demo lives under [`deploy/browser-night`](deploy/browser-night). Its service worker caches only versioned Pyodide CDN assets (`.mjs`, `.wasm`, package metadata, and packages such as `sqlite3`) in Cache Storage, so later starts can reuse the runtime without freezing Night's own source updates. See the [Browser Night guide](docs/guides/browser.md).
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Quickstart](docs/getting-started/quickstart.md)
 - [HTTP guide](docs/guides/http.md)
+- [Browser Night / Pyodide](docs/guides/browser.md)
 - [MCP](docs/guides/mcp.md)
 - [Cloudflare Workers](docs/guides/cloudflare-workers.md)
 - [Vercel Functions](docs/operations/vercel.md)
@@ -117,6 +133,6 @@ For coding agents and automated tooling, see [`SKILL.md`](SKILL.md).
 
 ## Version
 
-Current PyPI release: **0.1.1**.
+Current PyPI release: **0.1.2**.
 
 Night is alpha software. Features merged after the latest PyPI release may exist on `main` before the next package publication. Benchmark numbers in this repository are development measurements; in-process test clients do different bookkeeping and should not be treated as production HTTP throughput results.
