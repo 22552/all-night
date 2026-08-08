@@ -54,6 +54,6 @@ Python Workers は現在 beta です。compatibility date / flag / runtime SDK �
 
 ## バージョン
 
-現在のPyPI releaseは **all-night 0.1.3 / Python 3.11+** です。0.1.3 には Midnight の `night_midnight`、`night_midnight_component`、`night_midnight_dev`、`night_midnight_form` が同梱されています。Midnight は別PyPIパッケージではなく `all-night` の一部です。
+現在のPyPI releaseは **all-night 0.1.4 / Python 3.11+** です。0.1.3 には Midnight の `night_midnight`、`night_midnight_component`、`night_midnight_dev`、`night_midnight_form` が同梱されています。Midnight は別PyPIパッケージではなく `all-night` の一部です。
 
 AIコーディングエージェント向けの作業指針はリポジトリ直下の [`SKILL.md`](../../SKILL.md) を参照してください。

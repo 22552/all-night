@@ -871,16 +871,28 @@ class WebSocket:
         self.scope = scope
         self.receive = receive
         self.send = send
+        self._connect_received = False
+        self._accepted = False
 
     @property
     def path(self) -> str:
         return self.scope.get("path") or "/"
 
     async def accept(self, subprotocol: str | None = None):
+        if not self._connect_received:
+            event = await self.receive()
+            event_type = event.get("type")
+            if event_type == "websocket.disconnect":
+                raise ConnectionError("WebSocket disconnected before accept")
+            if event_type != "websocket.connect":
+                raise RuntimeError(f"Expected websocket.connect before accept, got {event_type!r}")
+            self._connect_received = True
+
         event = {"type": "websocket.accept"}
         if subprotocol:
             event["subprotocol"] = subprotocol
         await self.send(event)
+        self._accepted = True
 
     async def receive_text(self) -> str:
         event = await self.receive()
