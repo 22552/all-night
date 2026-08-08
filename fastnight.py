@@ -18,12 +18,11 @@ from night import (
     FileHandler,
     ROUTE_CALL_DIRECT_PARAM,
     ROUTE_CALL_NOARGS,
-    _current_request,
+    request,
 )
 
 _JSON_CONTENT_TYPE = b"application/json; charset=utf-8"
 _TEXT_CONTENT_TYPE = b"text/plain; charset=utf-8"
-_EMPTY_HEADERS: tuple[tuple[bytes, bytes], ...] = ()
 
 
 class _FastResponse(Response):
@@ -36,18 +35,19 @@ class _FastResponse(Response):
         self.status = status
         self.body = body
         self.raw_headers = []
+        length = str(len(body))
+        length_b = length.encode("ascii")
         if content_type is None:
-            self.headers = {"content-length": str(len(body))}
-            self._asgi_headers = ((b"content-length", str(len(body)).encode("ascii")),)
+            self.headers = {"content-length": length}
+            self._asgi_headers = ((b"content-length", length_b),)
         else:
-            length = str(len(body))
             self.headers = {
                 "content-type": content_type.decode("latin-1"),
                 "content-length": length,
             }
             self._asgi_headers = (
                 (b"content-type", content_type),
-                (b"content-length", length.encode("ascii")),
+                (b"content-length", length_b),
             )
 
     def asgi_headers(self):
@@ -64,6 +64,8 @@ class FastNight(Night):
     """Experimental Night subclass with conservative hot-path shortcuts."""
 
     def _coerce_response(self, value: t.Any) -> Response:
+        if isinstance(value, FileHandler):
+            return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
             # Match Night's compact JSON output but skip temporary header dict
@@ -78,8 +80,6 @@ class FastNight(Night):
             return _FastResponse(b"", status=204)
         if isinstance(value, Response):
             return value
-        if isinstance(value, FileHandler):
-            return value.response()
         if kind is bytearray:
             return _FastResponse(bytes(value))
         return _FastResponse(str(value).encode("utf-8"), content_type=_TEXT_CONTENT_TYPE)
