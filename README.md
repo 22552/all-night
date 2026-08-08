@@ -130,6 +130,10 @@ npm run dev
 
 See the [Netlify deployment guide](docs/operations/netlify.md).
 
+## Midnight
+
+Browser Night includes **Midnight**, a bidirectional Python ↔ HTML bridge for DOM events, structured DOM updates, custom events, and optional WebSocket transport. See `docs/guides/midnight.md`.
+
 ## Browser Night
 
 Night can run entirely in the browser through Pyodide and the `night_web` adapter. No Python server is required: routes execute inside the tab and Web-style requests are bridged into the same Night application.
