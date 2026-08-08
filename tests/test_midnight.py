@@ -111,6 +111,87 @@ def test_python_to_html_helpers_queue_outside_browser():
     ]
 
 
+def test_lifecycle_hooks_are_custom_events_not_dom_subscriptions():
+    bridge = Midnight()
+    seen = []
+
+    @bridge.on_hide
+    def hidden(event):
+        seen.append(("hide", event["detail"]["visibility_state"]))
+
+    @bridge.on_show()
+    def shown(event):
+        seen.append(("show", event["detail"]["visibility_state"]))
+
+    @bridge.on_leave
+    def leaving(event):
+        seen.append(("leave", event["detail"]["persisted"]))
+
+    assert bridge.subscriptions() == []
+
+    for payload in (
+        {"type": "custom:__lifecycle_hide", "selector": None, "detail": {"visibility_state": "hidden", "persisted": False}},
+        {"type": "custom:__lifecycle_show", "selector": None, "detail": {"visibility_state": "visible", "persisted": False}},
+        {"type": "custom:__lifecycle_leave", "selector": None, "detail": {"visibility_state": "hidden", "persisted": True}},
+    ):
+        asyncio.run(bridge.dispatch(payload))
+
+    assert seen == [("hide", "hidden"), ("show", "visible"), ("leave", True)]
+
+
+def test_persist_commands_and_validation():
+    bridge = Midnight()
+    bridge.persist(
+        "/save",
+        {"draft": "hello"},
+        key="draft",
+        when="leave",
+    )
+    bridge.persist(
+        "/audit",
+        "hidden",
+        key="audit",
+        transport="fetch",
+        when="hide",
+        headers={"X-Night": "1"},
+        content_type="text/plain",
+    )
+    bridge.flush_persist("draft")
+    bridge.cancel_persist("audit")
+
+    assert bridge.drain() == [
+        {
+            "op": "persist",
+            "url": "/save",
+            "data": {"draft": "hello"},
+            "key": "draft",
+            "transport": "auto",
+            "when": "leave",
+            "headers": {},
+            "content_type": "application/json",
+        },
+        {
+            "op": "persist",
+            "url": "/audit",
+            "data": "hidden",
+            "key": "audit",
+            "transport": "fetch",
+            "when": "hide",
+            "headers": {"X-Night": "1"},
+            "content_type": "text/plain",
+        },
+        {"op": "persist_flush", "key": "draft"},
+        {"op": "persist_cancel", "key": "audit"},
+    ]
+
+    with pytest.raises(ValueError, match="transport"):
+        bridge.persist("/save", {}, transport="magic")
+    with pytest.raises(ValueError, match="when"):
+        bridge.persist("/save", {}, when="tomorrow")
+    with pytest.raises(ValueError, match="custom request headers"):
+        bridge.persist("/save", {}, transport="beacon", headers={"X-Test": "1"})
+
+
 def test_browser_bridge_exceptions_are_not_silenced(monkeypatch):
     bridge = Midnight()
     fake_js = types.ModuleType("js")

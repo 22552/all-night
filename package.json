@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test:node": "node tests/node_runtime.mjs"
+    "test:node": "node --check deploy/browser-night/midnight.js && node tests/node_runtime.mjs"
   },
   "dependencies": {
     "pyodide": "314.0.3"
