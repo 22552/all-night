@@ -7,6 +7,8 @@ queued and can be drained by an adapter.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import html as _html
 import inspect
 import re
@@ -44,14 +46,94 @@ class MidnightTemplateEngine(TemplateEngine):
         return f'<span data-midnight-bind="{name}">{rendered}</span>'
 
 
+class MidnightSession:
+    """Per-client Midnight state.
+
+    Handlers and subscriptions live on :class:`Midnight`; mutable UI state and
+    queued Python->HTML commands live here so concurrent users cannot consume or
+    overwrite each other's data.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.id = str(session_id)
+        self.state: dict[str, t.Any] = {}
+        self._outbox: list[dict[str, t.Any]] = []
+
+    def push(self, command: dict[str, t.Any]) -> None:
+        self._outbox.append(command)
+
+    def drain(self) -> list[dict[str, t.Any]]:
+        queued, self._outbox = self._outbox, []
+        return queued
+
+
 class Midnight:
+    DEFAULT_SESSION = "default"
+
     def __init__(self) -> None:
         self._handlers: dict[tuple[str, str | None], list[Handler]] = {}
         self._ws_handlers: dict[str, list[Handler]] = {}
         self._subscriptions: list[dict[str, t.Any]] = []
-        self._outbox: list[dict[str, t.Any]] = []
-        self.state: dict[str, t.Any] = {}
+        self._sessions: dict[str, MidnightSession] = {}
+        self._session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+            f"night_midnight_session_{id(self)}", default=self.DEFAULT_SESSION
+        )
         self.templates = MidnightTemplateEngine()
+        self.get_session(self.DEFAULT_SESSION)
+
+    @property
+    def session_id(self) -> str:
+        """ID of the Midnight session bound to the current async context."""
+        return self._session_id.get()
+
+    @property
+    def current_session(self) -> MidnightSession:
+        return self.get_session(self.session_id)
+
+    @property
+    def state(self) -> dict[str, t.Any]:
+        """State for the current session.
+
+        Existing ``midnight.state`` code therefore stays session-aware without
+        requiring callers to index a shared dictionary manually.
+        """
+        return self.current_session.state
+
+    def get_session(self, session_id: str | None = None) -> MidnightSession:
+        key = self.session_id if session_id is None else str(session_id)
+        session = self._sessions.get(key)
+        if session is None:
+            session = MidnightSession(key)
+            self._sessions[key] = session
+        return session
+
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(self._sessions)
+
+    @contextlib.contextmanager
+    def session(self, session_id: str):
+        """Temporarily bind Midnight operations to one client/session.
+
+        ``ContextVar`` keeps this binding isolated across concurrent asyncio
+        tasks and restores the previous session when the context exits.
+        """
+        key = str(session_id)
+        session = self.get_session(key)
+        token = self._session_id.set(key)
+        try:
+            yield session
+        finally:
+            self._session_id.reset(token)
+
+    session_scope = session
+
+    def drop_session(self, session_id: str) -> bool:
+        """Forget one server-side session and its queued commands/state."""
+        key = str(session_id)
+        removed = self._sessions.pop(key, None) is not None
+        if key == self.DEFAULT_SESSION:
+            self.get_session(self.DEFAULT_SESSION)
+        return removed
 
     def on(
         self,
@@ -119,11 +201,10 @@ class Midnight:
     def _push(self, op: str, **payload: t.Any) -> None:
         command = {"op": op, **payload}
         if not self._browser_push(command):
-            self._outbox.append(command)
+            self.current_session.push(command)
 
     def drain(self) -> list[dict[str, t.Any]]:
-        queued, self._outbox = self._outbox, []
-        return queued
+        return self.current_session.drain()
 
     def drain_json(self) -> str:
         return json.dumps(self.drain(), separators=(",", ":"), default=str)
@@ -153,9 +234,8 @@ class Midnight:
     def focus(self, selector: str) -> None:
         self._push("focus", selector=str(selector))
 
-
     def set(self, name: str, value: t.Any) -> None:
-        """Update a live template binding from Python."""
+        """Update a live template binding in the current session."""
         key = str(name)
         self.state[key] = value
         self._push("bind", name=key, value=value)
@@ -212,13 +292,13 @@ class Midnight:
             if inspect.isawaitable(result):
                 await result
             if isinstance(result, dict) and "op" in result:
-                self._outbox.append(dict(result))
+                self.current_session.push(dict(result))
             elif isinstance(result, (list, tuple)):
                 for item in result:
                     if isinstance(item, dict) and "op" in item:
-                        self._outbox.append(dict(item))
+                        self.current_session.push(dict(item))
 
-    async def dispatch(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+    async def _dispatch_current(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
         payload = dict(_plain(payload) or {})
         event = str(payload.get("type", ""))
         selector = payload.get("selector")
@@ -228,21 +308,49 @@ class Midnight:
         await self._run_handlers(handlers, payload)
         return self.drain()
 
-    async def dispatch_ws(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+    async def dispatch(
+        self,
+        payload: dict[str, t.Any],
+        *,
+        session_id: str | None = None,
+    ) -> list[dict[str, t.Any]]:
+        """Dispatch one HTML event, optionally scoped to a server-side client.
+
+        A server adapter should derive ``session_id`` from its trusted
+        connection/session context instead of accepting an arbitrary client
+        supplied value.
+        """
+        if session_id is None:
+            return await self._dispatch_current(payload)
+        with self.session(session_id):
+            return await self._dispatch_current(payload)
+
+    async def _dispatch_ws_current(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
         payload = dict(_plain(payload) or {})
         event = str(payload.get("type", ""))
         await self._run_handlers(list(self._ws_handlers.get(event, ())), payload)
         return self.drain()
 
-    async def dispatch_json(self, payload: str) -> str:
-        commands = await self.dispatch(json.loads(str(payload)))
+    async def dispatch_ws(
+        self,
+        payload: dict[str, t.Any],
+        *,
+        session_id: str | None = None,
+    ) -> list[dict[str, t.Any]]:
+        if session_id is None:
+            return await self._dispatch_ws_current(payload)
+        with self.session(session_id):
+            return await self._dispatch_ws_current(payload)
+
+    async def dispatch_json(self, payload: str, *, session_id: str | None = None) -> str:
+        commands = await self.dispatch(json.loads(str(payload)), session_id=session_id)
         return json.dumps(commands, separators=(",", ":"), default=str)
 
-    async def dispatch_ws_json(self, payload: str) -> str:
-        commands = await self.dispatch_ws(json.loads(str(payload)))
+    async def dispatch_ws_json(self, payload: str, *, session_id: str | None = None) -> str:
+        commands = await self.dispatch_ws(json.loads(str(payload)), session_id=session_id)
         return json.dumps(commands, separators=(",", ":"), default=str)
 
 
 midnight = Midnight()
 
-__all__ = ["Midnight", "MidnightTemplateEngine", "midnight"]
+__all__ = ["Midnight", "MidnightSession", "MidnightTemplateEngine", "midnight"]

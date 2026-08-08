@@ -11,7 +11,7 @@ Midnight is shipped by `all-night` as the `night_midnight` module; it is not a s
 
 ## Night templates + Midnight
 
-Night's main `night.py` now owns the generic `TemplateEngine`. Midnight does not implement a second parser: `MidnightTemplateEngine` subclasses the core engine and adds live DOM bindings on top.
+Night's main `night.py` owns the generic `TemplateEngine`. Midnight does not implement a second parser: `MidnightTemplateEngine` subclasses the core engine and adds live DOM bindings on top.
 
 ```python
 from night_midnight import midnight
@@ -85,6 +85,56 @@ midnight.on("updated", detail => {
 })
 ```
 
+## Multiple users and server sessions
+
+Browser Night naturally isolates users because every browser tab owns its own Pyodide/Python runtime. A shared CPython server is different: one `midnight` object can serve many clients, so Midnight separates mutable state and queued commands with `MidnightSession` objects selected by a `ContextVar`.
+
+Handlers and subscriptions remain global, while `midnight.state`, template bindings, and the Python->HTML outbox are session-local:
+
+```python
+@midnight.on_event("rename")
+async def rename(event):
+    midnight.set("name", event["name"])
+    await do_something()
+    midnight.text("#name", midnight.state["name"])
+```
+
+A server adapter supplies a stable session or connection ID when dispatching an event:
+
+```python
+commands = await midnight.dispatch(
+    event,
+    session_id=trusted_connection_id,
+)
+
+ws_commands = await midnight.dispatch_ws(
+    ws_event,
+    session_id=trusted_connection_id,
+)
+```
+
+The session binding survives `await` boundaries, so concurrent clients do not switch each other's active Midnight state. Code that needs to perform work outside a dispatch can bind a session explicitly:
+
+```python
+with midnight.session(user_id):
+    midnight.set("unread", 3)
+    midnight.emit("notification", {"count": 3})
+```
+
+Useful session APIs are:
+
+```python
+midnight.session_id
+midnight.current_session
+midnight.get_session("alice")
+midnight.session_ids()
+midnight.drop_session("alice")
+```
+
+Call `drop_session()` when a temporary connection/session is permanently closed if its in-memory state is no longer needed. The built-in store is process-local; multi-process or distributed applications should keep durable/shared application state in their normal database or session backend and use Midnight sessions for per-connection UI state.
+
+A server must derive `session_id` from trusted connection/authentication context. Do not let an arbitrary browser event choose another user's Midnight session ID.
+
 ## WebSocket transport
 
 Python can ask the HTML side to create a WebSocket:
@@ -119,6 +169,9 @@ WebSocket events ┘                                  │
                                                    │ structured commands
                                                    ▼
 HTML DOM / CustomEvent / WebSocket
+
+Shared CPython server:
+connection/session ID -> ContextVar -> MidnightSession -> state + outbox
 ```
 
 Midnight keeps the local DOM bridge separate from WebSocket so a Browser Night page does not need to create a network socket merely to communicate with the Python runtime in the same tab.
