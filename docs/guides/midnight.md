@@ -1,82 +1,37 @@
 # Midnight
 
-## Installation in 0.1.5+
+Midnight is Night's Python/browser UI runtime. It is shipped directly inside the `all-night` distribution as `night_midnight` plus the standalone browser runtime `midnight.js`.
 
-Midnight is an optional standard-profile feature and is no longer bundled in the minimal `all-night` wheel.
+Install Night normally:
+
+```bash
+python -m pip install -U all-night
+```
+
+For a CPython server with the recommended WebSocket stack:
 
 ```bash
 python -m pip install -U "all-night[standard]"
 ```
 
-The extra installs the separate `all-night-midnight` distribution, which provides `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`.
+Do not install the old standalone `all-night-midnight` package alongside current Night. Midnight is integrated into `all-night` and both distributions providing `night_midnight.py` can collide in one environment.
 
-Midnight is Browser Night's bidirectional bridge between Python and the rendered HTML page.
+## UI Midnight
 
-It has two transports:
-
-- **Local DOM bridge** — browser events are captured in JavaScript and dispatched directly into Python running in Pyodide. This uses `postMessage`, not a loopback WebSocket, so local UI events stay lightweight.
-- **WebSocket bridge** — the HTML side can open a real WebSocket and forward `open`, `message`, `close`, and `error` events to Python. Python can connect, send, and close sockets through the same bridge.
-
-Midnight is shipped by `all-night` as the `night_midnight` module; it is not a separate `midnight` PyPI distribution.
-
-`Midnight()` is the normal explicit constructor. `from night_midnight import midnight` remains a lazy convenience proxy, so importing the module no longer eagerly creates shared mutable state. Tests and applications that want an independent bridge can simply create their own `Midnight()` instance. `reset_default_midnight()` can replace the convenience instance during development or tests.
-
-## Night templates + Midnight
-
-Night's main `night.py` owns the generic `TemplateEngine`. Midnight does not implement a second parser: `MidnightTemplateEngine` subclasses the core engine and adds live DOM bindings on top.
+Normal Midnight commands still target the current UI context. Existing code does not need a delivery scope:
 
 ```python
-from night_midnight import midnight
+from night_midnight import CompiledMidnight
 
-@app.get("/")
-def home():
-    return midnight.render_template_string("""
-      <h1>${{ title }}</h1>
-      <p>${{ count }}</p>
-      ${% if count > 0 %}<strong>Started</strong>${% endif %}
-    """, title="Night", count=0)
-```
-
-Simple interpolations are emitted with `data-midnight-bind` markers. Python can update those bindings without re-rendering the page:
-
-```python
-midnight.set("count", 1)
-```
-
-File templates use the same engine through `midnight.render_template("page.html", ...)`. See [Templates](templates.md) for the shared syntax and extension model.
-
-## HTML -> Python
-
-```python
-from night_midnight import midnight
+midnight = CompiledMidnight()
 
 @midnight.on("click", "#save")
 def save(event):
-    midnight.text("#status", "Saved from Python")
-
-@midnight.on("submit", "#login", prevent_default=True)
-async def login(event):
-    form = event.get("form") or {}
-    midnight.emit("login-result", {"user": form.get("user")})
+    midnight.text("#status", "Saved")
+    midnight.value("#count", 1)
 ```
 
-The browser sends a small event snapshot rather than a live DOM object. Useful fields include `type`, `selector`, `target`, keyboard/mouse fields, and form data for `input`, `change`, and `submit` events.
-
-For an application-defined event from HTML:
-
-```html
-<button onclick="midnight.emit('hello', {name: 'Night'})">Hello</button>
-```
-
-```python
-@midnight.on_event("hello")
-def hello(event):
-    midnight.emit("hello-back", event["detail"])
-```
-
-## Python -> HTML
-
-Midnight deliberately exposes structured DOM commands instead of arbitrary JavaScript evaluation:
+The ordinary UI API remains current-context oriented:
 
 ```python
 midnight.text("#status", "Ready")
@@ -89,124 +44,241 @@ midnight.focus("#name")
 midnight.emit("updated", {"count": 3})
 ```
 
-HTML can listen for Python events:
+For hybrid DOM work:
+
+```python
+from night_midnight import CompiledMidnight, js
+
+midnight = CompiledMidnight()
+field = midnight.get("#count")
+field.value = js.Number(field.value) + 1
+```
+
+Ordinary Python expressions keep Python semantics; `js.*` explicitly marks browser-side JavaScript expressions.
+
+## Direct WebSocket transport
+
+Serve the browser runtime and connect one persistent Midnight WebSocket:
+
+```python
+from night_midnight import CompiledMidnight, MidnightWebSocketAdapter, read_midnight_js
+
+midnight = CompiledMidnight()
+midnight_ws = MidnightWebSocketAdapter(midnight)
+
+@app.get("/midnight.js")
+def runtime():
+    return Response(
+        read_midnight_js(),
+        headers={"Content-Type": "application/javascript; charset=utf-8"},
+    )
+
+@app.websocket("/__midnight/ws")
+async def socket(ws):
+    await midnight_ws.serve(ws)
+```
+
+Browser:
+
+```html
+<script src="/midnight.js"></script>
+<script>
+const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+midnight.connectTransport(`${scheme}//${location.host}/__midnight/ws`);
+</script>
+```
+
+Normal server events use the persistent WebSocket. `@midnight.compile` can install client-safe event programs so later matching events execute in the browser without a server round trip.
+
+## Scoped delivery
+
+Multi-session delivery is provided by `night_midnight_scope`:
+
+```python
+from night_midnight_scope import (
+    ScopedMidnight,
+    ScopedMidnightWebSocketAdapter,
+    F, G, S, Q,
+)
+
+midnight = ScopedMidnight()
+midnight_ws = ScopedMidnightWebSocketAdapter(midnight)
+```
+
+Normal UI commands still affect only the current connection:
+
+```python
+midnight.text("#status", "saved locally")
+```
+
+Use `.to(...)` only when selecting delivery targets:
+
+```python
+await midnight.to(F.user_id == "u123").emit("notification")
+
+await midnight.to(
+    (F.org_id == "acme")
+    & (F.role.in_(["admin", "owner"]))
+    & (G.document_id == 42)
+).text("#status", "Document updated")
+```
+
+Calling `.to()` with no filter means all currently connected Midnight clients:
+
+```python
+await midnight.to().emit("maintenance", {"seconds": 30})
+```
+
+`midnight.all` is an equivalent explicit target.
+
+Simple keyword filters are an `F`-scope shortcut:
+
+```python
+await midnight.to(user_id="u123").emit("notification")
+await midnight.to(org_id="acme", role="admin").text("#notice", "Admin update")
+```
+
+### F / G / S / Q
+
+The filter namespaces have different lifetimes:
+
+```text
+F = logical/session metadata
+G = browser-tab metadata
+S = WebSocket-connection metadata
+Q = application-defined metadata
+```
+
+`F` is intended for authenticated session information such as user, organization, role, or plan. Supply trusted values from the server adapter rather than accepting arbitrary client claims:
+
+```python
+@app.websocket("/__midnight/ws")
+async def socket(ws):
+    await midnight_ws.serve(
+        ws,
+        F={
+            "user_id": current_user.id,
+            "org_id": current_user.org_id,
+            "role": current_user.role,
+        },
+        Q={"deployment": "production"},
+    )
+```
+
+`G` is tab-scoped. `midnight.js` stores a random tab ID in `sessionStorage`; reconnecting the WebSocket from the same tab keeps the same `G`, while another tab receives another ID.
+
+`S` is socket-scoped. A new WebSocket connection creates fresh `S` metadata and a new connection ID. Disconnecting destroys that socket scope.
+
+`Q` is a free application namespace for values whose meaning is defined by the application.
+
+Inside an active scoped connection the current values can be read or extended:
+
+```python
+midnight.F.org_id
+midnight.G.document_id = 42
+midnight.S.ready = True
+midnight.Q.feature = "beta"
+```
+
+### Filter expressions
+
+Filters are symbolic and JSON-serializable; Python lambdas are deliberately not part of the routing API. This keeps the model compatible with future Redis/NATS/broker fan-out.
+
+```python
+expr = (
+    (F.org_id == "acme")
+    & (G.document_id == 42)
+    & (F.role.in_(["admin", "owner"]))
+    & ~(Q.suspended == True)
+)
+
+payload = midnight.filter_json(expr)
+```
+
+Supported operators include `==`, `!=`, `<`, `<=`, `>`, `>=`, `in_(...)`, `contains(...)`, `exists()`, `&`, `|`, and `~`.
+
+The first implementation scans the local connection registry. The public filter AST is intentionally independent from that implementation so frequent fields can later be indexed, or the same query can be forwarded to other processes, without changing application code.
+
+## Session and connection model
+
+The concepts are intentionally separate:
+
+```text
+normal Midnight UI command
+    -> current WebSocket/UI context
+
+F logical session
+    -> may cover multiple tabs/connections
+
+G tab
+    -> survives WebSocket reconnect in that tab
+
+S socket
+    -> reset on every WebSocket connection
+
+Q application metadata
+    -> application-defined meaning
+```
+
+This makes patterns such as "all tabs of this user", "everyone in this organization who currently has document 42 open", or "everyone except a particular socket state" possible without creating explicit rooms.
+
+## Templates and live bindings
+
+`MidnightTemplateEngine` extends Night's normal `TemplateEngine` with live bindings:
+
+```python
+from night_midnight import midnight
+
+@app.get("/")
+def home():
+    return midnight.render_template_string("""
+      <h1>${{ title }}</h1>
+      <p>${{ count }}</p>
+    """, title="Night", count=0)
+```
+
+Then update the current UI binding with:
+
+```python
+midnight.set("count", 1)
+```
+
+## Trust boundary
+
+Never derive trusted `F` metadata from arbitrary browser payloads. Authentication and authorization remain the application's responsibility. Midnight's delivery filter only selects registered connections; it is not an authentication system.
+
+For the lower-level unscoped runtime, `trusted_session_id()` and `dispatch_trusted()` remain available for adapters that already possess an authenticated server-side identifier.
+
+## Browser tab identity and reconnect
+
+The direct browser runtime automatically includes its stable tab ID with each `midnight-event`. Unexpected WebSocket closes reconnect with capped exponential backoff. Reconnection changes socket scope `S` but preserves tab scope `G` for that page.
+
+The browser API exposes the current ID as:
 
 ```js
-midnight.on("updated", detail => {
-  console.log(detail.count)
-})
+midnight.tabId
+midnight.stats().tabId
 ```
-
-If Browser Night cannot import Pyodide's `js` module, commands fall back to the current session outbox. If `nightMidnightPush()` exists but throws, that exception is deliberately propagated instead of being converted into a silent queue fallback.
-
-## Multiple users and the trust boundary
-
-Browser Night naturally isolates users because every browser tab owns its own Pyodide/Python runtime. A shared CPython server is different: one bridge can serve many clients, so Midnight separates mutable state and queued commands with `MidnightSession` objects selected by a `ContextVar`.
-
-Handlers and subscriptions remain shared, while `midnight.state`, template bindings, and the Python->HTML outbox are session-local:
-
-```python
-@midnight.on_event("rename")
-async def rename(event):
-    midnight.set("name", event["name"])
-    await do_something()
-    midnight.text("#name", midnight.state["name"])
-```
-
-The untrusted/client-facing dispatch API intentionally has **no `session_id` argument**:
-
-```python
-commands = await midnight.dispatch_untrusted(event)
-# `midnight.dispatch(event)` is the compatibility alias for the same safe shape.
-```
-
-A server adapter that needs to address a shared-process session must make an explicit trust transition:
-
-```python
-from night_midnight import trusted_session_id
-
-session_id = trusted_session_id(authenticated_connection.id)
-commands = await midnight.dispatch_trusted(session_id, event)
-
-ws_commands = await midnight.dispatch_ws_trusted(session_id, ws_event)
-```
-
-`TrustedSessionId` is a distinct type for type checkers and the `*_trusted` method names make the boundary visible in code review. `trusted_session_id()` is an **assertion of trust, not authentication**: adapters must only call it with an identifier derived from authenticated connection/session context. Never wrap an ID copied directly from an arbitrary event payload.
-
-The session binding survives `await` boundaries, so concurrent clients do not switch each other's active Midnight state. Trusted server code that needs to operate outside dispatch can bind a session explicitly:
-
-```python
-with midnight.trusted_session(session_id):
-    midnight.set("unread", 3)
-    midnight.emit("notification", {"count": 3})
-```
-
-Useful session APIs are:
-
-```python
-midnight.session_id
-midnight.current_session
-midnight.get_session(session_id)
-midnight.session_ids()
-midnight.drop_session(session_id)
-```
-
-Call `drop_session()` when a temporary authenticated connection/session is permanently closed if its in-memory state is no longer needed. The built-in store is process-local; multi-process or distributed applications should keep durable/shared application state in their normal database or session backend and use Midnight sessions for per-connection UI state.
-
-## WebSocket transport
-
-Python can ask the HTML side to create a WebSocket:
-
-```python
-@midnight.on_ws("open")
-def opened(event):
-    midnight.ws_send({"hello": "Night"}, socket_id=event["socket_id"])
-
-@midnight.on_ws("message")
-def message(event):
-    print(event.get("data"), event.get("json"))
-
-midnight.ws_connect("wss://example.com/socket", socket_id="chat")
-```
-
-Or HTML can create it directly:
-
-```js
-midnight.connect("wss://example.com/socket", {socketId: "chat"})
-midnight.send({hello: "Night"}, "chat")
-```
-
-WebSocket lifecycle events are forwarded to `@midnight.on_ws(...)` handlers.
 
 ## Architecture
 
 ```text
-HTML DOM events ─┐
-                 ├─ midnight.js ─ postMessage ─ Pyodide ─ night_midnight.py
-WebSocket events ┘                                  │
-                                                   │ structured commands
-                                                   ▼
-HTML DOM / CustomEvent / WebSocket
-
-Shared CPython server:
-authenticated connection ID -> TrustedSessionId -> ContextVar
-                            -> MidnightSession -> state + outbox
+Browser tab
+  midnight.js
+     |  stable tab ID (G)
+     |  persistent/reconnecting WebSocket
+     v
+ScopedMidnightWebSocketAdapter
+     |-- F: trusted logical-session metadata
+     |-- G: tab metadata
+     |-- S: current socket metadata
+     `-- Q: application metadata
+              |
+              v
+       serializable filter AST
+              |
+      current process scan today
+      broker/index fan-out later
 ```
 
-Midnight keeps the local DOM bridge separate from WebSocket so a Browser Night page does not need to create a network socket merely to communicate with the Python runtime in the same tab.
-
-
-## WebSocket reconnect
-
-Midnight WebSockets reconnect automatically after an unexpected close. Reconnect uses capped exponential backoff and resets after a successful `open`:
-
-```python
-midnight.ws_connect(
-    "wss://example.com/live",
-    reconnect=True,
-    reconnect_delay=0.5,
-    reconnect_max_delay=5.0,
-)
-```
-
-`reconnect=False` disables this behavior. Calling `midnight.ws_close()` is treated as an explicit close and cancels pending reconnects. `@midnight.on_ws("reconnect")` can observe retry attempts; its payload includes `attempt` and `delay` (milliseconds). Normal `open`, `message`, `close`, and `error` events are unchanged.
+Midnight keeps current-context UI operations simple while making multi-session delivery explicit through `.to(...)`.
