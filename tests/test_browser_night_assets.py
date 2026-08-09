@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).parent.parent
 BROWSER = ROOT / "deploy" / "browser-night"
@@ -44,11 +45,13 @@ def test_midnight_is_not_packaged_in_all_night_core():
 
 
 def test_midnight_distribution_owns_midnight_runtime():
-    version = (ROOT / ".release" / "version").read_text().strip()
+    core_version = (ROOT / ".release" / "version").read_text().strip()
     pyproject = (ROOT / "packages" / "midnight" / "pyproject.toml").read_text()
     assert 'name = "all-night-midnight"' in pyproject
-    assert f'version = "{version}"' in pyproject
-    assert f'dependencies = ["all-night=={version}"]' in pyproject
+    match = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
+    assert match is not None
+    assert match.group(1)
+    assert f'dependencies = ["all-night=={core_version}"]' in pyproject
     assert '"night_midnight"' in pyproject
     assert '"night_midnight_scope"' in pyproject
     assert '"../../midnight.js"' in pyproject
@@ -58,3 +61,11 @@ def test_publish_builds_core_and_midnight_distributions():
     workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
     assert "python -m build --outdir dist ." in workflow
     assert "python -m build --wheel --outdir dist packages/midnight" in workflow
+
+
+def test_midnight_can_publish_independently():
+    workflow = (ROOT / ".github" / "workflows" / "publish-midnight.yml").read_text()
+    assert '"midnight-v*"' in workflow
+    assert "python -m build --wheel --outdir dist packages/midnight" in workflow
+    assert "python -m build --outdir dist ." not in workflow
+    assert "https://pypi.org/p/all-night-midnight" in workflow
