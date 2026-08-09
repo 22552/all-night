@@ -92,3 +92,17 @@ app.get("/raw", send_file("data.json").raw())
 ```
 
 
+
+
+## Endpoint response cache
+
+For pure no-argument endpoints whose completed response can be reused, put `@app.cache` below the route decorator:
+
+```python
+@app.get("/catalog")
+@app.cache
+def catalog():
+    return {"items": build_catalog()}
+```
+
+`@app.cache(ttl=30)` expires the snapshot after 30 seconds; the default `ttl=None` keeps it for the process lifetime. Cached responses are cloned on every hit so `HEAD`, cookies, and later response mutation cannot corrupt the shared snapshot. Responses carrying `Set-Cookie` and responses outside the 2xx/3xx range are not cached. The decorator intentionally supports no-argument endpoints only; request-dependent handlers should use an application-specific cache key instead.

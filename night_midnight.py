@@ -414,12 +414,24 @@ class Midnight:
         *,
         socket_id: str = "default",
         protocols: list[str] | None = None,
+        reconnect: bool = True,
+        reconnect_delay: float = 0.5,
+        reconnect_max_delay: float = 5.0,
     ) -> None:
+        reconnect_delay = float(reconnect_delay)
+        reconnect_max_delay = float(reconnect_max_delay)
+        if reconnect_delay < 0 or reconnect_max_delay < 0:
+            raise ValueError("WebSocket reconnect delays must be >= 0")
+        if reconnect_max_delay < reconnect_delay:
+            raise ValueError("reconnect_max_delay must be >= reconnect_delay")
         self._push(
             "ws_connect",
             url=str(url),
             socket_id=str(socket_id),
             protocols=list(protocols or []),
+            reconnect=bool(reconnect),
+            reconnect_delay_ms=int(reconnect_delay * 1000),
+            reconnect_max_delay_ms=int(reconnect_max_delay * 1000),
         )
 
     def ws_send(self, data: t.Any, *, socket_id: str = "default") -> None:
