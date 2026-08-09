@@ -98,6 +98,23 @@ def index():
 - **Netlify Functions** — the official Node 24 template uses Netlify's modern `Request -> Response` Functions API and the shared Night Node adapter.
 - **Browser Night** — run Night entirely in a browser tab with Pyodide.
 
+## DevTools
+
+Night DevTools is a separate, development-only Blueprint. Enable it explicitly
+on a debug application, then open **[http://127.0.0.1:8000/__night__](http://127.0.0.1:8000/__night__)**.
+
+```python
+from night import Night
+from night_devtools import enable_devtools
+
+app = Night(debug=True)
+enable_devtools(app)
+```
+
+It provides a browser dashboard plus JSON endpoints for the current route map
+and runtime summary. Calling `enable_devtools()` on a non-debug application
+raises an error, so it is not silently exposed in production.
+
 ## MCP
 
 ```python
