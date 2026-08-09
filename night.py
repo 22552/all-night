@@ -31,6 +31,7 @@ import gzip
 import hashlib
 import hmac
 import inspect
+import importlib.util
 import json
 import mimetypes
 import os
@@ -2004,6 +2005,8 @@ class Router:
 
     def __init__(self):
         self.routes: list[Route] = []
+        self._json_dumps: t.Callable[..., t.Any] = json.dumps
+        self._fast_mode = False
 
     def add_route(
         self,
@@ -2208,6 +2211,24 @@ class Night(Router):
         self._rpc_route_installed = False
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
+
+    def fast(self) -> "Night":
+        """Enable Night's optional CPython fast profile.
+
+        Requires ``all-night[standard]``. Dict/list responses use ``orjson``;
+        ``night run`` also selects uvloop/httptools/websockets when available.
+        External ASGI servers keep control of their own event loop/backend.
+        """
+        try:
+            import orjson
+        except ImportError as exc:
+            raise RuntimeError(
+                "Night.fast() requires the standard profile: "
+                "pip install 'all-night[standard]'"
+            ) from exc
+        self._json_dumps = orjson.dumps
+        self._fast_mode = True
+        return self
 
     def gz(self, level: int = 6):
         """Enable gzip by default for send_file() and static() responses."""
@@ -2918,7 +2939,7 @@ class Night(Router):
             return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
-            return JSONResponse(value)
+            return JSONResponse(value, dumps=self._json_dumps)
         if kind is str:
             return PlainTextResponse(value)
         if kind is bytes:
@@ -3463,7 +3484,15 @@ def cli(argv: list[str] | None = None) -> int:
             code.interact(local={"app": target, **namespace})
             return 0
         import uvicorn
-        uvicorn.run(target, host=args.host, port=args.port)
+        run_options: dict[str, t.Any] = {}
+        if bool(getattr(target, "_fast_mode", False)):
+            if importlib.util.find_spec("uvloop") is not None:
+                run_options["loop"] = "uvloop"
+            if importlib.util.find_spec("httptools") is not None:
+                run_options["http"] = "httptools"
+            if importlib.util.find_spec("websockets") is not None:
+                run_options["ws"] = "websockets"
+        uvicorn.run(target, host=args.host, port=args.port, **run_options)
         return 0
     return 2
 
