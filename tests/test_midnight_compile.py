@@ -2,8 +2,7 @@ import asyncio
 
 import pytest
 
-from night_midnight_compile import CompiledMidnight, MidnightCompileError
-from night_midnight_hybrid import js
+from night_midnight import CompiledMidnight, MidnightCompileError, js
 
 
 def test_compile_installs_client_program_on_first_event():
