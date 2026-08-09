@@ -56,9 +56,10 @@ configured application before it is deployed.
 ```bash
 nightcli new my-api --template api
 cd my-api
+nightcli doctor
 nightcli check
-nightcli routes
-nightcli run --reload
+nightcli routes --format json
+nightcli dev
 ```
 
 Templates are `api`, `site`, `midnight`, and `cloudflare`. Use
