@@ -86,7 +86,7 @@ jobs:
           async def root(): return {'message':'hello'}
           @app.get('/users/:user_id')
           async def user(request): return {'id':int(request.path_params['user_id'])}
-          if __name__ == '__main__': app.start(host='127.0.0.1', port=8106, workers=1)
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8106)
           PY
 
       - name: Run comparison
@@ -111,7 +111,6 @@ jobs:
 
           hit(){ local name=$1 port=$2 endpoint=$3 run=$4; [[ $endpoint == static ]] && path=/ || path=/users/42; timeout 10s oha -n 4000 -c 50 --no-tui --output-format json "http://127.0.0.1:${port}${path}" >"bench-results/${name}-${endpoint}-${run}.json"; }
 
-          # Rotate order each round to reduce time-drift bias.
           for endpoint in static dynamic; do
             for run in 1 2 3 4; do
               start=$(( (run - 1) % 6 ))
