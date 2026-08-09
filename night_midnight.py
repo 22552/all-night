@@ -1,19 +1,21 @@
-"""Midnight: Browser Night's bidirectional Python/HTML bridge.
+"""Midnight: Night's bidirectional Python/browser UI runtime.
 
-Midnight keeps the Python side runtime-independent. In Browser Night it can
-push commands directly through Pyodide's ``js`` module; elsewhere commands are
-queued and can be drained by an adapter.
+The core Midnight runtime, hybrid DOM expressions, and client compilation live
+in this module. Direct browser WebSocket transport lives in ``night_midnight_ws``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
+import hashlib
 import html as _html
 import inspect
-import time
-import re
 import json
+import operator
+import re
+import time
 import typing as t
 
 from night import HTMLResponse, TemplateEngine
@@ -23,17 +25,10 @@ TrustedSessionId = t.NewType("TrustedSessionId", str)
 
 
 def trusted_session_id(value: str) -> TrustedSessionId:
-    """Explicitly mark an adapter-derived identifier as trusted.
-
-    This function does not authenticate input. Its purpose is to make the trust
-    elevation visible at the adapter boundary and to give type checkers a
-    distinct type for APIs that may address another client's session.
-    """
     return TrustedSessionId(str(value))
 
 
 def _plain(value: t.Any) -> t.Any:
-    """Convert a Pyodide JsProxy-ish value into ordinary Python containers."""
     to_py = getattr(value, "to_py", None)
     if callable(to_py):
         try:
@@ -44,8 +39,6 @@ def _plain(value: t.Any) -> t.Any:
 
 
 class MidnightTemplateEngine(TemplateEngine):
-    """TemplateEngine extension that turns simple expressions into live bindings."""
-
     _bindable = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 
     def render_value(self, expression, value, context, *, autoescape, options):
@@ -59,13 +52,6 @@ class MidnightTemplateEngine(TemplateEngine):
 
 
 class MidnightSession:
-    """Per-client Midnight state.
-
-    Handlers and subscriptions live on :class:`Midnight`; mutable UI state and
-    queued Python->HTML commands live here so concurrent users cannot consume or
-    overwrite each other's data.
-    """
-
     def __init__(
         self,
         session_id: str,
@@ -124,7 +110,6 @@ class Midnight:
 
     @property
     def session_id(self) -> str:
-        """ID of the Midnight session bound to the current async context."""
         return self._session_id.get()
 
     @property
@@ -133,11 +118,6 @@ class Midnight:
 
     @property
     def state(self) -> dict[str, t.Any]:
-        """State for the current session.
-
-        Existing ``midnight.state`` code therefore stays session-aware without
-        requiring callers to index a shared dictionary manually.
-        """
         return self.current_session.state
 
     def _prune_sessions(self, *, keep: str | None = None) -> None:
@@ -169,9 +149,7 @@ class Midnight:
         session = self._sessions.get(key)
         if session is None:
             self._prune_sessions(keep=key)
-            session = MidnightSession(
-                key, max_outbox=self.max_outbox, clock=self._clock
-            )
+            session = MidnightSession(key, max_outbox=self.max_outbox, clock=self._clock)
             self._sessions[key] = session
         else:
             session.touch()
@@ -179,15 +157,11 @@ class Midnight:
         return session
 
     def prune_sessions(self) -> int:
-        """Drop expired/excess non-default sessions and return how many were removed."""
         before = len(self._sessions)
         self._prune_sessions(keep=self.session_id)
         return before - len(self._sessions)
 
-    def get_session(
-        self, session_id: TrustedSessionId | None = None
-    ) -> MidnightSession:
-        """Return the current session or an explicitly trusted session."""
+    def get_session(self, session_id: TrustedSessionId | None = None) -> MidnightSession:
         key = self.session_id if session_id is None else str(session_id)
         return self._get_session(key)
 
@@ -196,13 +170,6 @@ class Midnight:
 
     @contextlib.contextmanager
     def trusted_session(self, session_id: TrustedSessionId):
-        """Bind operations to one adapter-authenticated client/session.
-
-        ``ContextVar`` keeps the binding isolated across concurrent asyncio
-        tasks and restores the previous session when the context exits. Callers
-        should create ``TrustedSessionId`` only from authenticated connection or
-        server-side session context, never directly from client payload data.
-        """
         key = str(session_id)
         session = self._get_session(key)
         token = self._session_id.set(key)
@@ -212,7 +179,6 @@ class Midnight:
             self._session_id.reset(token)
 
     def drop_session(self, session_id: TrustedSessionId) -> bool:
-        """Forget one trusted server-side session and its queued state."""
         key = str(session_id)
         removed = self._sessions.pop(key, None) is not None
         if key == self.DEFAULT_SESSION:
@@ -226,15 +192,6 @@ class Midnight:
         *,
         prevent_default: bool = False,
     ):
-        """Handle a DOM or custom event.
-
-        DOM example::
-
-            @midnight.on("click", "#save")
-            def save(event): ...
-
-        Custom HTML->Python events use ``custom:<name>`` or ``on_event``.
-        """
         event = str(event)
         selector = str(selector) if selector is not None else None
 
@@ -263,19 +220,12 @@ class Midnight:
         return decorator if fn is None else decorator(fn)
 
     def on_hide(self, fn: Handler | None = None):
-        """Handle the page becoming hidden (best effort)."""
         return self._on_lifecycle("hide", fn)
 
     def on_show(self, fn: Handler | None = None):
-        """Handle the page becoming visible again (best effort)."""
         return self._on_lifecycle("show", fn)
 
     def on_leave(self, fn: Handler | None = None):
-        """Handle ``pagehide`` before navigation/unload (best effort).
-
-        Do not rely on this hook to finish an async save during teardown. Use
-        :meth:`persist` to pre-register data for Beacon/keepalive delivery.
-        """
         return self._on_lifecycle("leave", fn)
 
     def on_ws(self, event: str):
@@ -298,12 +248,7 @@ class Midnight:
             from js import nightMidnightPush  # type: ignore
         except ImportError:
             return False
-
-        return bool(
-            nightMidnightPush(
-                json.dumps(command, separators=(",", ":"), default=str)
-            )
-        )
+        return bool(nightMidnightPush(json.dumps(command, separators=(",", ":"), default=str)))
 
     def _push(self, op: str, **payload: t.Any) -> None:
         command = {"op": op, **payload}
@@ -316,7 +261,6 @@ class Midnight:
     def drain_json(self) -> str:
         return json.dumps(self.drain(), separators=(",", ":"), default=str)
 
-    # Python -> HTML -----------------------------------------------------
     def emit(self, name: str, detail: t.Any = None) -> None:
         self._push("emit", name=str(name), detail=detail)
 
@@ -342,7 +286,6 @@ class Midnight:
         self._push("focus", selector=str(selector))
 
     def set(self, name: str, value: t.Any) -> None:
-        """Update a live template binding in the current session."""
         key = str(name)
         self.state[key] = value
         self._push("bind", name=key, value=value)
@@ -358,13 +301,6 @@ class Midnight:
         headers: dict[str, str] | None = None,
         content_type: str = "application/json",
     ) -> None:
-        """Pre-register a small payload for reliable page-lifecycle delivery.
-
-        ``transport='auto'`` prefers ``navigator.sendBeacon`` when custom
-        headers are not required and falls back to ``fetch(..., keepalive=True)``.
-        ``when`` may be ``leave``, ``hide`` or ``now``. Reusing ``key`` replaces
-        the previously registered payload.
-        """
         transport = str(transport).lower()
         when = str(when).lower()
         if transport not in {"auto", "beacon", "fetch"}:
@@ -386,28 +322,21 @@ class Midnight:
         )
 
     def cancel_persist(self, key: str = "default") -> None:
-        """Remove a previously registered lifecycle payload."""
         self._push("persist_cancel", key=str(key))
 
     def flush_persist(self, key: str | None = None) -> None:
-        """Ask the browser to send registered persistence data immediately."""
         self._push("persist_flush", key=None if key is None else str(key))
 
     def render_template_string(self, source: str, **context: t.Any) -> HTMLResponse:
         data = {**self.state, **context}
-        html = self.templates.render_text(
-            source, data, autoescape=True, render_options={"live": True}
-        )
+        html = self.templates.render_text(source, data, autoescape=True, render_options={"live": True})
         return HTMLResponse(html)
 
     def render_template(self, filename: str, **context: t.Any) -> HTMLResponse:
         data = {**self.state, **context}
-        html = self.templates.render_file(
-            filename, data, autoescape=True, render_options={"live": True}
-        )
+        html = self.templates.render_file(filename, data, autoescape=True, render_options={"live": True})
         return HTMLResponse(html)
 
-    # WebSocket transport ------------------------------------------------
     def ws_connect(
         self,
         url: str,
@@ -444,12 +373,7 @@ class Midnight:
         code: int = 1000,
         reason: str = "",
     ) -> None:
-        self._push(
-            "ws_close",
-            socket_id=str(socket_id),
-            code=int(code),
-            reason=str(reason),
-        )
+        self._push("ws_close", socket_id=str(socket_id), code=int(code), reason=str(reason))
 
     async def _run_handlers(self, handlers: list[Handler], payload: dict[str, t.Any]) -> None:
         for handler in handlers:
@@ -474,12 +398,6 @@ class Midnight:
         return self.drain()
 
     async def dispatch_untrusted(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
-        """Dispatch browser/client payload only within the current session.
-
-        This method deliberately has no ``session_id`` parameter, so client data
-        cannot choose another server-side Midnight session through this API.
-        Browser Night normally uses the default per-runtime session here.
-        """
         return await self._dispatch_current(payload)
 
     dispatch = dispatch_untrusted
@@ -489,7 +407,6 @@ class Midnight:
         session_id: TrustedSessionId,
         payload: dict[str, t.Any],
     ) -> list[dict[str, t.Any]]:
-        """Dispatch payload into an adapter-authenticated server-side session."""
         with self.trusted_session(session_id):
             return await self._dispatch_current(payload)
 
@@ -524,18 +441,384 @@ class Midnight:
         commands = await self.dispatch_ws_untrusted(json.loads(str(payload)))
         return json.dumps(commands, separators=(",", ":"), default=str)
 
-    async def dispatch_ws_json_trusted(
-        self, session_id: TrustedSessionId, payload: str
-    ) -> str:
+    async def dispatch_ws_json_trusted(self, session_id: TrustedSessionId, payload: str) -> str:
         commands = await self.dispatch_ws_trusted(session_id, json.loads(str(payload)))
         return json.dumps(commands, separators=(",", ":"), default=str)
+
+
+class HybridExpressionError(RuntimeError):
+    pass
+
+
+class _ServerExpr:
+    __slots__ = ("node",)
+
+    def __init__(self, node: tuple[t.Any, ...]) -> None:
+        self.node = node
+
+    def _binary(self, op: str, other: t.Any) -> "_ServerExpr":
+        return _ServerExpr(("binary", op, self, other))
+
+    def _rbinary(self, op: str, other: t.Any) -> "_ServerExpr":
+        return _ServerExpr(("binary", op, other, self))
+
+    def __add__(self, other): return self._binary("add", other)
+    def __radd__(self, other): return self._rbinary("add", other)
+    def __sub__(self, other): return self._binary("sub", other)
+    def __rsub__(self, other): return self._rbinary("sub", other)
+    def __mul__(self, other): return self._binary("mul", other)
+    def __rmul__(self, other): return self._rbinary("mul", other)
+    def __truediv__(self, other): return self._binary("truediv", other)
+    def __rtruediv__(self, other): return self._rbinary("truediv", other)
+    def __floordiv__(self, other): return self._binary("floordiv", other)
+    def __rfloordiv__(self, other): return self._rbinary("floordiv", other)
+    def __mod__(self, other): return self._binary("mod", other)
+    def __rmod__(self, other): return self._rbinary("mod", other)
+    def __pow__(self, other): return self._binary("pow", other)
+    def __rpow__(self, other): return self._rbinary("pow", other)
+
+
+class DOMValue(_ServerExpr):
+    __slots__ = ("owner", "selector", "property")
+
+    def __init__(self, owner: "HybridMidnight", selector: str, property: str) -> None:
+        self.owner = owner
+        self.selector = str(selector)
+        self.property = str(property)
+        super().__init__(("dom", self.selector, self.property))
+
+
+class ClientExpr:
+    __slots__ = ("node",)
+
+    def __init__(self, node: dict[str, t.Any]) -> None:
+        self.node = node
+
+    def _binary(self, op: str, other: t.Any) -> "ClientExpr":
+        return ClientExpr({"kind": "binary", "op": op, "left": self.node, "right": _client_node(other)})
+
+    def _rbinary(self, op: str, other: t.Any) -> "ClientExpr":
+        return ClientExpr({"kind": "binary", "op": op, "left": _client_node(other), "right": self.node})
+
+    def __add__(self, other): return self._binary("add", other)
+    def __radd__(self, other): return self._rbinary("add", other)
+    def __sub__(self, other): return self._binary("sub", other)
+    def __rsub__(self, other): return self._rbinary("sub", other)
+    def __mul__(self, other): return self._binary("mul", other)
+    def __rmul__(self, other): return self._rbinary("mul", other)
+    def __truediv__(self, other): return self._binary("div", other)
+    def __rtruediv__(self, other): return self._rbinary("div", other)
+    def __mod__(self, other): return self._binary("mod", other)
+    def __rmod__(self, other): return self._rbinary("mod", other)
+    def __pow__(self, other): return self._binary("pow", other)
+    def __rpow__(self, other): return self._rbinary("pow", other)
+
+
+class JSRef(ClientExpr):
+    __slots__ = ("path",)
+
+    def __init__(self, path: tuple[str, ...]) -> None:
+        self.path = path
+        super().__init__({"kind": "js_ref", "path": list(path)})
+
+    def __getattr__(self, name: str) -> "JSRef":
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return JSRef((*self.path, name))
+
+    def __call__(self, *args: t.Any) -> ClientExpr:
+        return ClientExpr({"kind": "call", "callee": self.node, "args": [_client_node(arg) for arg in args]})
+
+
+js = JSRef(())
+
+
+def _client_node(value: t.Any) -> dict[str, t.Any]:
+    if isinstance(value, ClientExpr):
+        return value.node
+    if isinstance(value, DOMValue):
+        return {"kind": "dom", "selector": value.selector, "property": value.property}
+    if isinstance(value, _ServerExpr):
+        raise HybridExpressionError("server/Python expressions cannot be embedded inside js expressions")
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return {"kind": "literal", "value": value}
+    if isinstance(value, (list, tuple)):
+        return {"kind": "literal", "value": list(value)}
+    if isinstance(value, dict):
+        return {"kind": "literal", "value": dict(value)}
+    raise HybridExpressionError(f"{type(value).__name__} is not serializable into a client expression")
+
+
+class DOMRef:
+    __slots__ = ("_owner", "_selector")
+
+    def __init__(self, owner: "HybridMidnight", selector: str) -> None:
+        object.__setattr__(self, "_owner", owner)
+        object.__setattr__(self, "_selector", str(selector))
+
+    @property
+    def selector(self) -> str:
+        return self._selector
+
+    def __getattr__(self, name: str) -> DOMValue:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return DOMValue(self._owner, self._selector, name)
+
+    def __setattr__(self, name: str, value: t.Any) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        if isinstance(value, ClientExpr):
+            self._owner._push("hybrid_client_set", selector=self._selector, property=str(name), expr=value.node)
+            return
+        if isinstance(value, _ServerExpr):
+            self._owner._queue_server_set(self._selector, str(name), value)
+            return
+        self._owner._push("dom_set", selector=self._selector, property=str(name), value=value)
+
+
+_SERVER_BINARY: dict[str, t.Callable[[t.Any, t.Any], t.Any]] = {
+    "add": operator.add,
+    "sub": operator.sub,
+    "mul": operator.mul,
+    "truediv": operator.truediv,
+    "floordiv": operator.floordiv,
+    "mod": operator.mod,
+    "pow": operator.pow,
+}
+
+
+def _compile_server(value: t.Any, reads: list[dict[str, str]]) -> tuple[t.Any, ...]:
+    if isinstance(value, DOMValue):
+        index = len(reads)
+        reads.append({"selector": value.selector, "property": value.property})
+        return ("input", index)
+    if isinstance(value, _ServerExpr):
+        kind, *parts = value.node
+        if kind == "binary":
+            op, left, right = parts
+            return ("binary", op, _compile_server(left, reads), _compile_server(right, reads))
+        if kind == "dom":
+            selector, prop = parts
+            index = len(reads)
+            reads.append({"selector": str(selector), "property": str(prop)})
+            return ("input", index)
+        raise HybridExpressionError(f"unknown server expression node: {kind}")
+    if isinstance(value, ClientExpr):
+        raise HybridExpressionError("js/client expressions must stay entirely client-side")
+    return ("literal", value)
+
+
+def _eval_server(plan: tuple[t.Any, ...], values: list[t.Any]) -> t.Any:
+    kind = plan[0]
+    if kind == "literal":
+        return plan[1]
+    if kind == "input":
+        return values[int(plan[1])]
+    if kind == "binary":
+        op = str(plan[1])
+        fn = _SERVER_BINARY.get(op)
+        if fn is None:
+            raise HybridExpressionError(f"unsupported Python operation: {op}")
+        return fn(_eval_server(plan[2], values), _eval_server(plan[3], values))
+    raise HybridExpressionError(f"unknown server plan node: {kind}")
+
+
+class HybridMidnight(Midnight):
+    def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._hybrid_pending: dict[tuple[str, int], tuple[str, str, tuple[t.Any, ...]]] = {}
+        self._hybrid_sequence = 0
+
+    def get(self, selector: str) -> DOMRef:
+        return DOMRef(self, selector)
+
+    def _queue_server_set(self, selector: str, property: str, expr: _ServerExpr) -> None:
+        reads: list[dict[str, str]] = []
+        plan = _compile_server(expr, reads)
+        self._hybrid_sequence += 1
+        request_id = self._hybrid_sequence
+        self._hybrid_pending[(self.session_id, request_id)] = (str(selector), str(property), plan)
+        self._push("hybrid_server_set", request_id=request_id, reads=reads)
+
+    def _resolve_hybrid_result(self, payload: dict[str, t.Any]) -> None:
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        if not isinstance(detail, dict):
+            return
+        try:
+            request_id = int(detail.get("request_id"))
+        except (TypeError, ValueError):
+            return
+        pending = self._hybrid_pending.pop((self.session_id, request_id), None)
+        if pending is None:
+            return
+        selector, prop, plan = pending
+        values = detail.get("values")
+        if not isinstance(values, list):
+            values = []
+        try:
+            result = _eval_server(plan, values)
+        except Exception as exc:
+            self._push("hybrid_error", request_id=request_id, error_type=type(exc).__name__, message=str(exc))
+            return
+        self._push("dom_set", selector=selector, property=prop, value=result)
+
+    async def _dispatch_current(self, payload: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+        if isinstance(payload, dict) and str(payload.get("type", "")) == "custom:__hybrid_result":
+            self._resolve_hybrid_result(payload)
+            return self.drain()
+        return await super()._dispatch_current(payload)
+
+
+class MidnightCompileError(HybridExpressionError):
+    pass
+
+
+class EventExpr(ClientExpr):
+    __slots__ = ("path",)
+
+    def __init__(self, path: tuple[str, ...] = ()) -> None:
+        self.path = path
+        super().__init__({"kind": "event", "path": list(path)})
+
+    def __getitem__(self, key: str) -> "EventExpr":
+        return EventExpr((*self.path, str(key)))
+
+    def get(self, key: str, default: t.Any = None) -> ClientExpr:
+        return ClientExpr({"kind": "event_get", "path": [*self.path, str(key)], "default": default})
+
+    def __getattr__(self, name: str) -> "EventExpr":
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return EventExpr((*self.path, name))
+
+
+class CompiledMidnight(HybridMidnight):
+    def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._compile_program: list[dict[str, t.Any]] | None = None
+
+    def on(self, event: str, selector: str | None = None, *, prevent_default: bool = False):
+        base = super().on(event, selector, prevent_default=prevent_default)
+
+        def decorator(fn):
+            spec = getattr(fn, "__midnight_compile_spec__", None)
+            if isinstance(spec, dict):
+                spec["event"] = str(event)
+                spec["selector"] = None if selector is None else str(selector)
+                spec["prevent_default"] = bool(prevent_default)
+            return base(fn)
+
+        return decorator
+
+    def _push(self, op: str, **payload: t.Any) -> None:
+        program = self._compile_program
+        if program is None:
+            return super()._push(op, **payload)
+        if op == "hybrid_client_set":
+            program.append({
+                "op": "dom_set_expr",
+                "selector": str(payload["selector"]),
+                "property": str(payload["property"]),
+                "expr": payload["expr"],
+            })
+            return
+        if op == "dom_set":
+            program.append({
+                "op": "dom_set",
+                "selector": str(payload["selector"]),
+                "property": str(payload["property"]),
+                "value": payload.get("value"),
+            })
+            return
+        raise MidnightCompileError(f"{op!r} requires server execution and cannot be used inside @midnight.compile")
+
+    def _handler_id(self, fn: t.Callable[..., t.Any]) -> str:
+        code = getattr(fn, "__code__", None)
+        raw = (
+            f"{getattr(fn, '__module__', '')}:{getattr(fn, '__qualname__', repr(fn))}:"
+            f"{getattr(code, 'co_code', b'')!r}:{getattr(code, 'co_consts', ())!r}"
+        ).encode("utf-8", "replace")
+        return hashlib.sha256(raw).hexdigest()[:20]
+
+    def _compiled_handlers_for_current_session(self) -> set[str]:
+        session = self.current_session
+        installed = getattr(session, "_midnight_compiled_handlers", None)
+        if installed is None:
+            installed = set()
+            setattr(session, "_midnight_compiled_handlers", installed)
+        return installed
+
+    def _compiled_pair_is_exclusive(self, event: str, selector: str | None) -> bool:
+        handlers = list(self._handlers.get((event, selector), ()))
+        if selector is not None:
+            handlers.extend(self._handlers.get((event, None), ()))
+        return bool(handlers) and all(
+            isinstance(getattr(handler, "__midnight_compile_spec__", None), dict)
+            for handler in handlers
+        )
+
+    def compile(self, fn: t.Callable[..., t.Any] | None = None):
+        def decorate(func: t.Callable[..., t.Any]):
+            spec: dict[str, t.Any] = {
+                "id": self._handler_id(func),
+                "event": None,
+                "selector": None,
+                "prevent_default": False,
+            }
+
+            @functools.wraps(func)
+            def wrapper(event: t.Any = None, *args: t.Any, **kwargs: t.Any):
+                installed = self._compiled_handlers_for_current_session()
+                if spec["id"] in installed:
+                    return None
+                if self._compile_program is not None:
+                    raise MidnightCompileError("nested @midnight.compile tracing is not supported")
+                if spec["event"] is None:
+                    raise MidnightCompileError("@midnight.compile must be registered with @midnight.on")
+
+                program: list[dict[str, t.Any]] = []
+                self._compile_program = program
+                try:
+                    result = func(EventExpr(), *args, **kwargs)
+                    if inspect.isawaitable(result):
+                        raise MidnightCompileError("async compiled handlers are not supported yet")
+                finally:
+                    self._compile_program = None
+
+                if not program:
+                    raise MidnightCompileError("compiled handler produced no client-side commands")
+
+                installed.add(spec["id"])
+                super(CompiledMidnight, self)._push(
+                    "compiled_install",
+                    handler_id=spec["id"],
+                    event=spec["event"],
+                    selector=spec["selector"],
+                    prevent_default=spec["prevent_default"],
+                    exclusive=self._compiled_pair_is_exclusive(spec["event"], spec["selector"]),
+                    program=program,
+                    execute_now=True,
+                )
+                return None
+
+            wrapper.__midnight_compile_spec__ = spec
+            return wrapper
+
+        return decorate if fn is None else decorate(fn)
+
+
+def get(selector: str, *, midnight: HybridMidnight | None = None) -> DOMRef:
+    if midnight is None:
+        raise RuntimeError("get() needs midnight=...; prefer midnight.get(selector)")
+    return midnight.get(selector)
 
 
 _default_midnight: Midnight | None = None
 
 
 def get_default_midnight() -> Midnight:
-    """Return the lazily-created convenience Midnight instance."""
     global _default_midnight
     if _default_midnight is None:
         _default_midnight = Midnight()
@@ -543,15 +826,12 @@ def get_default_midnight() -> Midnight:
 
 
 def reset_default_midnight() -> Midnight:
-    """Replace the convenience instance, primarily for tests/dev reloads."""
     global _default_midnight
     _default_midnight = Midnight()
     return _default_midnight
 
 
 class _DefaultMidnightProxy:
-    """Lazy compatibility proxy for ``from night_midnight import midnight``."""
-
     __slots__ = ()
 
     def __getattr__(self, name: str) -> t.Any:
@@ -566,12 +846,23 @@ class _DefaultMidnightProxy:
 midnight: Midnight = t.cast(Midnight, _DefaultMidnightProxy())
 
 __all__ = [
+    "ClientExpr",
+    "CompiledMidnight",
+    "DOMRef",
+    "DOMValue",
+    "EventExpr",
+    "HybridExpressionError",
+    "HybridMidnight",
+    "JSRef",
     "Midnight",
+    "MidnightCompileError",
     "MidnightSession",
     "MidnightTemplateEngine",
     "TrustedSessionId",
-    "trusted_session_id",
+    "get",
     "get_default_midnight",
-    "reset_default_midnight",
+    "js",
     "midnight",
+    "reset_default_midnight",
+    "trusted_session_id",
 ]
