@@ -63,7 +63,7 @@ nightcli run --reload
 
 Templates are `api`, `site`, `midnight`, and `cloudflare`. Use
 `nightcli info` to inspect the nearest project, or pass
-`--project path/to/project` from elsewhere.
+`--project path/to/project` from elsewhere. `nightcli openapi` writes the app's OpenAPI document to `openapi.json` (or a project-relative `--output` path).
 
 ## Fast mode
 
