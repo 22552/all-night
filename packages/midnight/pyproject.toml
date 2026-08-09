@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "all-night-midnight"
-version = "0.1.5"
+version = "0.1.7"
 description = "Midnight live HTML bridge for the All-Night Python framework"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "22552"}]
-dependencies = ["all-night==0.1.5"]
+dependencies = ["all-night==0.1.7"]
 
 [project.urls]
 Homepage = "https://github.com/22552/all-night"
@@ -17,5 +17,8 @@ Documentation = "https://github.com/22552/all-night/tree/main/docs/guides/midnig
 Repository = "https://github.com/22552/all-night"
 
 [tool.setuptools]
-py-modules = ["night_midnight", "night_midnight_component", "night_midnight_dev", "night_midnight_form"]
+py-modules = ["night_midnight", "night_midnight_scope", "night_midnight_component", "night_midnight_dev", "night_midnight_form"]
 package-dir = {"" = "../.."}
+
+[tool.setuptools.data-files]
+"." = ["../../midnight.js"]

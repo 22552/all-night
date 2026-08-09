@@ -33,3 +33,28 @@ def test_release_version_matches_pyproject():
     version = (ROOT / ".release" / "version").read_text().strip()
     pyproject = (ROOT / "pyproject.toml").read_text()
     assert f'version = "{version}"' in pyproject
+
+
+def test_midnight_is_not_packaged_in_all_night_core():
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    setuptools = pyproject.split("[tool.setuptools]", 1)[1]
+    assert '"night_midnight"' not in setuptools
+    assert '"night_midnight_scope"' not in setuptools
+    assert '"midnight.js"' not in setuptools
+
+
+def test_midnight_distribution_owns_midnight_runtime():
+    version = (ROOT / ".release" / "version").read_text().strip()
+    pyproject = (ROOT / "packages" / "midnight" / "pyproject.toml").read_text()
+    assert 'name = "all-night-midnight"' in pyproject
+    assert f'version = "{version}"' in pyproject
+    assert f'dependencies = ["all-night=={version}"]' in pyproject
+    assert '"night_midnight"' in pyproject
+    assert '"night_midnight_scope"' in pyproject
+    assert '"../../midnight.js"' in pyproject
+
+
+def test_publish_builds_core_and_midnight_distributions():
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    assert "python -m build --outdir dist ." in workflow
+    assert "python -m build --wheel --outdir dist packages/midnight" in workflow
