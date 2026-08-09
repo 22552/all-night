@@ -2009,6 +2009,8 @@ class Router:
         self._fast_mode = False
         self._json_dumps: t.Callable[..., t.Any] = json.dumps
         self._fast_mode = False
+        self._json_dumps: t.Callable[..., t.Any] = json.dumps
+        self._fast_mode = False
 
     def add_route(
         self,

@@ -1,5 +1,21 @@
 # Cloudflare Python Workers
 
+## Standard profile and Workers
+
+`all-night[standard]` includes `workers-runtime-sdk` on Python 3.13+ so local CPython development can share Cloudflare runtime types with the rest of the full Night stack. For deployment, Cloudflare Python Workers use Pyodide rather than Uvicorn, so `app.fast()`'s `uvloop`/`httptools` path is intentionally not used inside Workers.
+
+A Workers project should keep the runtime dependency small and use Cloudflare's current toolchain:
+
+```toml
+[project]
+dependencies = ["all-night==0.1.5"]
+
+[dependency-groups]
+dev = ["workers-py", "workers-runtime-sdk"]
+```
+
+Use `uv run pywrangler dev` and `uv run pywrangler deploy` for local development and deployment.
+
 Night can run directly inside Cloudflare Python Workers without a separate ASGI server process.
 
 Cloudflare Python Workers execute Python through Pyodide inside the Workers runtime. The platform runs top-level module initialization during deployment and snapshots WebAssembly linear memory, which means imports, `app = Night()`, and route registration are good candidates for module scope. Request-specific data must still stay request-scoped.

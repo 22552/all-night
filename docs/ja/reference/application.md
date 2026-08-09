@@ -13,4 +13,6 @@
 
 `body=Dataclass` で登録したルートは、OpenAPIのリクエストボディスキーマにも反映されます。
 
+## Fast mode
 
+`Night.fast()` はstandard構成のCPython向け高速化を有効にし、同じアプリインスタンスを返すため `app = Night().fast()` と書けます。`all-night[standard]` が必要です。dict/listレスポンスでは `orjson` を使い、`night run` は導入済みの `uvloop`、`httptools`、`websockets` を選択します。

@@ -1,5 +1,21 @@
 # Cloudflare Python Workers
 
+## standard構成とWorkers
+
+`all-night[standard]` はPython 3.13+で `workers-runtime-sdk` も導入するため、通常のCPython開発環境でもCloudflare runtimeの型を利用できます。一方、Cloudflare Python Workers本番環境はUvicornではなくPyodide上で動くため、`app.fast()` の `uvloop` / `httptools` 経路はWorkers内では使いません。
+
+Workersプロジェクト側はランタイム依存を小さく保ち、Cloudflareの現行ツールチェーンを使います:
+
+```toml
+[project]
+dependencies = ["all-night==0.1.5"]
+
+[dependency-groups]
+dev = ["workers-py", "workers-runtime-sdk"]
+```
+
+ローカル開発は `uv run pywrangler dev`、デプロイは `uv run pywrangler deploy` を使います。
+
 Night は追加のASGI server processを置かず、Cloudflare Python Workersの中で直接動かせます。
 
 Cloudflare Python WorkersはWorkers runtime内のPyodideでPythonを実行します。deploy時にはmoduleのtop-level初期化とimportを実行し、初期化済みWebAssembly linear memoryをsnapshotしてcold start時の初期化量を減らします。そのため `app = Night()` とroute登録はmodule scopeへ置き、request固有stateはrequest scopeに保持する構成が向いています。

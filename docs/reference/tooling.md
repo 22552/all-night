@@ -25,9 +25,9 @@ You can also run the application directly with Uvicorn, Hypercorn, or another AS
 uvicorn app:app --reload
 ```
 
-### Routes and shell in 0.1.4
+### Routes and shell in 0.1.5
 
-The current 0.1.4 parser defines `routes` and `shell` without an application-file argument:
+The current 0.1.5 parser defines `routes` and `shell` without an application-file argument:
 
 ```bash
 night routes
@@ -155,3 +155,7 @@ The MCP endpoint is independent of Workers RPC: it is an ordinary HTTP route and
 - rough in-process comparisons against other Python web frameworks when their optional benchmark dependencies are installed
 
 When changing routing, dispatch, Request/Response construction, or TestClient internals, run both the full test suite and the benchmark before merging. Prefer same-runner A/B comparisons over comparing absolute timings from different machines.
+
+### Fast-mode server selection
+
+When the loaded application has `app.fast()` enabled, `night run` asks Uvicorn to use `uvloop`, `httptools`, and `websockets` when those modules are installed by `all-night[standard]`. Without fast mode, the existing Uvicorn defaults are preserved.

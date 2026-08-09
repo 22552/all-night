@@ -1,5 +1,15 @@
 # Midnight
 
+## 0.1.5以降のインストール
+
+Midnightは `standard` 構成のオプション機能になり、最小の `all-night` wheelには同梱されません。
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+このextraが別配布の `all-night-midnight` を導入し、`night_midnight`、`night_midnight_component`、`night_midnight_dev`、`night_midnight_form` を提供します。
+
 Midnight は Browser Night の Python と表示中の HTML を双方向につなぐブリッジ拡張です。
 
 通信は2系統に分かれます。

@@ -97,7 +97,7 @@ night run app.py
 night run app.py --host 0.0.0.0 --port 8080
 ```
 
-The current 0.1.4 implementation also contains `night routes` and `night shell`, but they do not currently accept an application path. Older docs that showed `night routes app.py` or `night shell app.py` were incorrect.
+The current 0.1.5 implementation also contains `night routes` and `night shell`, but they do not currently accept an application path. Older docs that showed `night routes app.py` or `night shell app.py` were incorrect.
 
 Read the exact current behavior in [Tooling and CLI](reference/tooling.md).
 
@@ -147,7 +147,7 @@ The framework core has no required runtime dependencies on normal CPython. Insta
 
 ## Version
 
-The current PyPI release documented here is **all-night 0.1.4**, requiring Python **3.11+**.
+The current PyPI release documented here is **all-night 0.1.5**, requiring Python **3.11+**.
 
 Midnight is bundled as part of `all-night` through the modules `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`; it is not a separate PyPI distribution.
 
