@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -223,6 +224,24 @@ def command_routes(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_openapi(args: argparse.Namespace) -> int:
+    root, config = require_project(args.project)
+    app = load_app(root, app_target(config, args.app))
+    openapi = getattr(app, "openapi", None)
+    if not callable(openapi):
+        raise CLIError("Target does not expose Night's openapi() method.")
+    output = Path(args.output)
+    if output.is_absolute():
+        raise CLIError("--output must be a path relative to the project root.")
+    destination = (root / output).resolve()
+    if root not in (destination, *destination.parents):
+        raise CLIError("--output must stay inside the project root.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(openapi(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"Wrote OpenAPI document: {destination.relative_to(root)}")
+    return 0
+
+
 def command_info(args: argparse.Namespace) -> int:
     root, config = require_project(args.project)
     project = config["project"]
@@ -253,11 +272,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("run", command_run, "Run the local ASGI development server"),
         ("check", command_check, "Import and validate the configured Night app"),
         ("routes", command_routes, "Print application routes"),
+        ("openapi", command_openapi, "Write the application's OpenAPI document"),
         ("info", command_info, "Show project configuration"),
     ):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--project", help="Project root; defaults to nearest night.toml")
         command.add_argument("--app", help="Override configured app target")
+        if name == "openapi":
+            command.add_argument("--output", default="openapi.json", help="Project-relative output path")
         if name == "run":
             command.add_argument("--host", help="Host to bind")
             command.add_argument("--port", type=int, help="Port to bind")
