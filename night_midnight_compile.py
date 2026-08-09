@@ -10,7 +10,6 @@ from __future__ import annotations
 import functools
 import hashlib
 import inspect
-import json
 import typing as t
 
 from night_midnight_hybrid import ClientExpr, HybridExpressionError, HybridMidnight
@@ -105,12 +104,33 @@ class CompiledMidnight(HybridMidnight):
         ).encode("utf-8", "replace")
         return hashlib.sha256(raw).hexdigest()[:20]
 
+    def _compiled_handlers_for_current_session(self) -> set[str]:
+        session = self.current_session
+        installed = getattr(session, "_midnight_compiled_handlers", None)
+        if installed is None:
+            installed = set()
+            setattr(session, "_midnight_compiled_handlers", installed)
+        return installed
+
+    def _compiled_pair_is_exclusive(self, event: str, selector: str | None) -> bool:
+        handlers = list(self._handlers.get((event, selector), ()))
+        if selector is not None:
+            handlers.extend(self._handlers.get((event, None), ()))
+        return bool(handlers) and all(
+            isinstance(getattr(handler, "__midnight_compile_spec__", None), dict)
+            for handler in handlers
+        )
+
     def compile(self, fn: t.Callable[..., t.Any] | None = None):
         """Compile a client-safe event handler after its first server invocation.
 
         Supported operations in the MVP are client expressions (``js.*``), DOM
         reads embedded in those expressions, event references, and literal DOM
         assignments. A server-only Midnight command raises ``MidnightCompileError``.
+
+        Installation is tracked per Midnight session. This is important for a
+        real WebSocket deployment: one browser compiling a handler must not stop
+        another browser from receiving its own ``compiled_install`` command.
         """
 
         def decorate(func: t.Callable[..., t.Any]):
@@ -119,12 +139,12 @@ class CompiledMidnight(HybridMidnight):
                 "event": None,
                 "selector": None,
                 "prevent_default": False,
-                "installed": False,
             }
 
             @functools.wraps(func)
             def wrapper(event: t.Any = None, *args: t.Any, **kwargs: t.Any):
-                if spec["installed"]:
+                installed = self._compiled_handlers_for_current_session()
+                if spec["id"] in installed:
                     return None
                 if self._compile_program is not None:
                     raise MidnightCompileError("nested @midnight.compile tracing is not supported")
@@ -143,13 +163,14 @@ class CompiledMidnight(HybridMidnight):
                 if not program:
                     raise MidnightCompileError("compiled handler produced no client-side commands")
 
-                spec["installed"] = True
+                installed.add(spec["id"])
                 super(CompiledMidnight, self)._push(
                     "compiled_install",
                     handler_id=spec["id"],
                     event=spec["event"],
                     selector=spec["selector"],
                     prevent_default=spec["prevent_default"],
+                    exclusive=self._compiled_pair_is_exclusive(spec["event"], spec["selector"]),
                     program=program,
                     execute_now=True,
                 )
