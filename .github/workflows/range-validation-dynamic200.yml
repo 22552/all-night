@@ -1,0 +1,127 @@
+name: Range validation Dynamic200
+on:
+  push:
+    branches: [perf/range-validation-dynamic200]
+    paths: [.github/workflows/range-validation-dynamic200.yml]
+permissions:
+  contents: write
+jobs:
+  patch-test-bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Apply implementation
+        run: |
+          cp night.py /tmp/night_base.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py')
+          s=p.read_text()
+
+          old='''class ValidationError(HTTPError):\n    def __init__(self, errors: list[dict[str, str]], detail: str = "Invalid request body"):\n        self.errors = errors\n        super().__init__(422, detail)\n\n\ndef _validate_value'''
+          new='''class ValidationError(HTTPError):\n    def __init__(self, errors: list[dict[str, str]], detail: str = "Invalid request body"):\n        self.errors = errors\n        super().__init__(422, detail)\n\n\n_VALIDATION_PLAN_CACHE: dict[type, tuple[tuple[dataclasses.Field, t.Any], ...]] = {}\n\n\ndef _validation_plan(model: type) -> tuple[tuple[dataclasses.Field, t.Any], ...]:\n    plan = _VALIDATION_PLAN_CACHE.get(model)\n    if plan is not None:\n        return plan\n    hints = t.get_type_hints(model)\n    plan = tuple((field, hints.get(field.name, field.type)) for field in dataclasses.fields(model))\n    _VALIDATION_PLAN_CACHE[model] = plan\n    return plan\n\n\ndef _validate_value'''
+          assert old in s
+          s=s.replace(old,new,1)
+          old='''    hints = t.get_type_hints(model)\n    result: dict[str, t.Any] = {}\n    for field in dataclasses.fields(model):\n        name = f"{prefix}.{field.name}" if prefix else field.name\n        if field.name not in value:\n            if field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING:\n                continue\n            errors.append({"field": name, "message": "Field is required"})\n            continue\n        result[field.name] = _validate_value(value[field.name], hints.get(field.name, field.type), name, errors)'''
+          new='''    result: dict[str, t.Any] = {}\n    for field, field_type in _validation_plan(model):\n        name = f"{prefix}.{field.name}" if prefix else field.name\n        if field.name not in value:\n            if field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING:\n                continue\n            errors.append({"field": name, "message": "Field is required"})\n            continue\n        result[field.name] = _validate_value(value[field.name], field_type, name, errors)'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        h.setdefault("etag", etag)\n        h.setdefault("last-modified", _http_date(mtime))'''
+          new='''        h.setdefault("etag", etag)\n        h.setdefault("last-modified", _http_date(mtime))\n        h.setdefault("accept-ranges", "bytes")'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        with open(path, "rb") as f:\n            data = f.read()\n        super().__init__(body=data, status=status, headers=h)'''
+          new='''        range_header = req.header("range") if req is not None and status == 200 else None\n        if range_header and range_header.startswith("bytes=") and "," not in range_header:\n            if_range = req.header("if-range") if req is not None else None\n            use_range = True\n            if if_range:\n                parsed_if_range = _parse_http_date(if_range)\n                if parsed_if_range is not None:\n                    use_range = mtime.replace(microsecond=0) <= parsed_if_range.astimezone(_dt.timezone.utc).replace(microsecond=0)\n                else:\n                    use_range = if_range.strip() == etag\n            if use_range:\n                spec = range_header[6:].strip()\n                try:\n                    start_text, end_text = spec.split("-", 1)\n                    if not start_text:\n                        length = int(end_text)\n                        if length <= 0:\n                            raise ValueError\n                        start = max(0, st.st_size - length)\n                        end = st.st_size - 1\n                    else:\n                        start = int(start_text)\n                        end = int(end_text) if end_text else st.st_size - 1\n                    if start < 0 or start >= st.st_size or end < start:\n                        raise ValueError\n                    end = min(end, st.st_size - 1)\n                except (ValueError, TypeError):\n                    h["content-range"] = f"bytes */{st.st_size}"\n                    super().__init__(body=b"", status=416, headers=h)\n                    return\n                length = end - start + 1\n                with open(path, "rb") as f:\n                    f.seek(start)\n                    data = f.read(length)\n                h["content-range"] = f"bytes {start}-{end}/{st.st_size}"\n                super().__init__(body=data, status=206, headers=h)\n                return\n\n        with open(path, "rb") as f:\n            data = f.read()\n        super().__init__(body=data, status=status, headers=h)'''
+          assert old in s
+          s=s.replace(old,new,1)
+
+          old='''        use_gzip, level = self._gzip_settings(req)\n        if not use_gzip:'''
+          new='''        use_gzip, level = self._gzip_settings(req)\n        if req is not None and req.header("range"):\n            use_gzip = False\n        if not use_gzip:'''
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Install tools
+        run: |
+          python -m pip install -q pytest 'uvicorn[standard]' blacksheep orjson
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+      - name: Tests and range smoke
+        run: |
+          PYTHONPATH=. pytest -q
+          cat > /tmp/range_app.py <<'PY'
+          from night import Night, send_file
+          app=Night().fast()
+          @app.get('/file')
+          def file(req): return send_file('/tmp/range-data.bin', req=req)
+          PY
+          printf '0123456789abcdefghijklmnopqrstuvwxyz' > /tmp/range-data.bin
+          PYTHONPATH=. uvicorn --app-dir /tmp range_app:app --host 127.0.0.1 --port 8765 --no-access-log --loop uvloop --http httptools >/tmp/range.log 2>&1 & p=$!
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8765/file >/dev/null && break; sleep .05; done
+          test "$(curl -sS -H 'Range: bytes=10-14' -D /tmp/h1 http://127.0.0.1:8765/file)" = 'abcde'
+          grep -qi '^HTTP/1.1 206' /tmp/h1
+          grep -qi '^content-range: bytes 10-14/36' /tmp/h1
+          test "$(curl -sS -H 'Range: bytes=-4' -D /tmp/h2 http://127.0.0.1:8765/file)" = 'wxyz'
+          grep -qi '^HTTP/1.1 206' /tmp/h2
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Range: bytes=999-1000' http://127.0.0.1:8765/file)
+          test "$code" = 416
+          kill -9 $p || true
+      - name: Validation microbenchmark
+        run: |
+          python - <<'PY'
+          import dataclasses, importlib.util, statistics, time
+          def load(path,name):
+              spec=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+          base=load('/tmp/night_base.py','night_base'); fast=load('night.py','night_fast')
+          @dataclasses.dataclass
+          class Child: score:int; name:str
+          @dataclasses.dataclass
+          class Payload: id:int; title:str; active:bool; tags:list[str]; child:Child
+          value={'id':42,'title':'x','active':True,'tags':['a','b','c'],'child':{'score':7,'name':'n'}}
+          # Dataclass identity must belong to each loaded module's stdlib view; normal dataclasses are fine.
+          for m in (base,fast):
+              for _ in range(1000): m._validate_dataclass(Payload,value)
+          for m in (base,fast):
+              runs=[]
+              for _ in range(7):
+                  t=time.perf_counter()
+                  for i in range(20000): m._validate_dataclass(Payload,value)
+                  runs.append(20000/(time.perf_counter()-t))
+              print(m.__name__, statistics.median(runs), runs)
+          PY
+      - name: Dynamic200 benchmark
+        run: |
+          cat > /tmp/bench_night.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/items/<int:item_id>')
+          def item(item_id:int): return {'id':item_id,'ok':True}
+          PY
+          cat > /tmp/bench_bs.py <<'PY'
+          from blacksheep import Application, get, json
+          app=Application()
+          @get('/items/{item_id}')
+          def item(item_id:int): return json({'id':item_id,'ok':True})
+          PY
+          mkdir -p /tmp/results
+          bench(){ local fw=$1 mod=$2 n=$3; PYTHONPATH=. uvicorn --app-dir /tmp $mod:app --host 127.0.0.1 --port 8766 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$fw.log 2>&1 & local p=$!; for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8766/items/42 >/dev/null 2>&1 && break; sleep .05; done; oha -n 2000 -c 200 --no-tui --output-format quiet http://127.0.0.1:8766/items/42 >/dev/null; oha -n 20000 -c 200 --no-tui --output-format json http://127.0.0.1:8766/items/42 > /tmp/results/$fw-$n.json; kill -9 $p 2>/dev/null || true; wait $p 2>/dev/null || true; }
+          for n in 1 2 3 4 5 6; do if ((n%2)); then bench night bench_night $n; bench blacksheep bench_bs $n; else bench blacksheep bench_bs $n; bench night bench_night $n; fi; done
+          python - <<'PY'
+          import json,statistics
+          for fw in ('night','blacksheep'):
+              vals=[json.load(open(f'/tmp/results/{fw}-{i}.json'))['summary']['requestsPerSec'] for i in range(1,7)]
+              lats=[json.load(open(f'/tmp/results/{fw}-{i}.json'))['summary']['average'] for i in range(1,7)]
+              print('DYNAMIC200',fw,'req/s',statistics.median(vals),'avg',statistics.median(lats),'runs',vals)
+          PY
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py
+          git commit -m 'add byte ranges and cache validation plans'
+          git push origin HEAD:perf/range-validation-dynamic200
