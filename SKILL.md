@@ -1,24 +1,54 @@
 ---
 name: all-night
-summary: Build, review, optimize, test, and deploy applications using the Night ASGI framework and its optional MCP/serverless integrations.
+summary: Build, review, optimize, test, package, release, and deploy applications using the Night ASGI framework, its standard performance profile, Midnight, MCP, and serverless/edge integrations.
 ---
 
 # All-Night / Night
 
-Use this skill when working with the `all-night` PyPI package or the `22552/all-night` repository: creating Night applications, modifying `night.py`, reviewing routing/request/response behavior, benchmarking performance, publishing releases, exposing MCP tools, or deploying Night to Cloudflare Python Workers and Vercel Functions.
+Use this skill when working with the `all-night` PyPI package or the `22552/all-night` repository: creating Night applications, modifying `night.py`, reviewing routing/request/response behavior, benchmarking performance, publishing releases, using `app.fast()`, working with Midnight, exposing MCP tools, or deploying Night to Cloudflare Python Workers, Vercel Functions, Node.js, Browser Night, or Netlify Functions.
 
 ## Current baseline
 
-- Package: `all-night`
+- Core package: `all-night`
 - Core import: `night`
 - MCP extension import: `night_mcp`
-- Current documented PyPI release: `0.1.2`
+- Midnight package: `all-night-midnight`
+- Midnight imports: `night_midnight`, `night_midnight_component`, `night_midnight_dev`, `night_midnight_form`
+- Current documented PyPI release: `0.1.5`
 - Supported Python: `>=3.11`
 - Core architecture: single-file `night.py`
-- Normal CPython core: no required runtime dependencies
+- Minimal CPython core: no required runtime dependencies
 - Application protocol: ASGI
+- Recommended full install: `all-night[standard]`
 
 Before changing behavior, read `README.md`, `docs/README.md`, and the relevant reference/guide. Treat implementation code as the source of truth when documentation and code disagree.
+
+## Install profiles
+
+Night has two user-facing install profiles.
+
+Minimal core:
+
+```bash
+python -m pip install -U all-night
+```
+
+This keeps ordinary CPython Night dependency-free and does not include Midnight modules.
+
+Recommended standard profile:
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+The standard profile currently pulls in the recommended CPython/server stack, including:
+
+- `uvicorn[standard]`
+- `orjson`
+- `all-night-midnight==0.1.5`
+- `workers-runtime-sdk` on supported Python versions for Cloudflare-oriented development
+
+Do not move standard-only dependencies into the minimal core unless the project explicitly changes its dependency policy.
 
 ## Build an application
 
@@ -46,26 +76,77 @@ def user(user_id: int):
 
 Return plain `dict`/`list` for JSON, `str` for text, `bytes` for binary content, or explicit response classes when status/headers/content type matter.
 
+## Fast mode
+
+Night 0.1.5 adds the optional CPython fast profile:
+
+```python
+from night import Night
+
+app = Night().fast()
+```
+
+`Night.fast()`:
+
+- returns the same application instance;
+- requires the standard profile;
+- switches dict/list response serialization to `orjson`;
+- sets the application's fast-mode flag;
+- when launched with `night run`, lets Night explicitly select installed Uvicorn fast backends such as `uvloop`, `httptools`, and `websockets`.
+
+`app.fast()` does not override backend choices made by an external ASGI server. If the user launches `uvicorn app:app` directly, Uvicorn remains responsible for loop/protocol selection.
+
+Fast mode is a CPython/server optimization. Do not claim that `uvloop` or `httptools` apply inside Cloudflare Python Workers, Browser Night, or other Pyodide runtimes.
+
 ## Preserve the dependency boundary
 
 Do not add mandatory third-party runtime dependencies to the normal Night core without a compelling reason.
 
-Optional integrations belong behind lazy imports, separate optional modules, or application-level dependencies. Existing examples include:
+Optional integrations belong behind lazy imports, extras, separate distributions, optional modules, or application-level dependencies. Existing examples include:
 
+- `all-night[standard]`
+- `all-night-midnight`
 - ASGI servers such as Uvicorn/Hypercorn
 - `graphql-core`
 - Lua integration
 - Cloudflare `workers-runtime-sdk`
 - optional JSON serializers such as `orjson`
-- `night_mcp`, which is bundled but stays outside the single-file `night.py` core
+- `night_mcp`, which stays outside the single-file `night.py` core
 
 A feature that only applies to one platform must not make ordinary `import night` require that platform's SDK.
 
+## Midnight packaging
+
+Midnight is not bundled into the minimal `all-night` wheel as of 0.1.5.
+
+The separate distribution `all-night-midnight` provides:
+
+- `night_midnight.py`
+- `night_midnight_component.py`
+- `night_midnight_dev.py`
+- `night_midnight_form.py`
+
+Users normally receive it through:
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+When editing packaging, preserve the wheel boundary:
+
+- the core `all-night` wheel must not contain `night_midnight*` modules;
+- the `all-night-midnight` wheel must contain all intended Midnight modules;
+- `all-night[standard]` must resolve the matching Midnight release.
+
+Read `docs/guides/midnight.md` before changing Midnight APIs or packaging.
+
 ## Routing and hot-path rules
 
-Night is optimized by moving work to route-registration time.
+Night is optimized by moving work to route-registration time and minimizing request-path allocations.
 
 Important structures include static method/path indexes, dynamic prefix indexes, terminal dynamic indexes, compiled regex fallback, route call classification, and route-specific invokers.
+
+Recent routing/performance work removed an unused composite dynamic matcher rebuild that caused unnecessary O(n)-style reconstruction during route registration. Do not reintroduce registration-time structures unless they are actually used by dispatch.
 
 When optimizing routing:
 
@@ -73,10 +154,24 @@ When optimizing routing:
 2. avoid linear scans over all routes for common REST paths;
 3. specialize common `<int:name>` / `<name>` shapes before falling back to regex;
 4. prefer registration-time compilation over request-time introspection;
-5. do not add benchmark-only caches that make repeated fixed paths unrealistically fast;
-6. keep complex-pattern compatibility through the generic fallback.
+5. avoid rebuilding indexes that request dispatch does not consume;
+6. do not add benchmark-only caches that make repeated fixed paths unrealistically fast;
+7. keep complex-pattern compatibility through the generic fallback.
 
 Do not assume an optimization is faster. Measure it against the same baseline on the same runner/process when practical.
+
+## Template performance
+
+Night templates compile their structure ahead of rendering. Expression AST parsing should also stay out of the render hot path.
+
+Current performance expectations:
+
+- parse template expressions at compile time and cache the resulting AST nodes;
+- do not call `ast.parse()` for the same expression on every render;
+- use a fast path when an expression contains no filters before entering character-by-character filter splitting;
+- keep semantics identical between cached and uncached evaluation paths.
+
+Template optimizations should be measured with a dedicated render microbenchmark as well as application-level tests.
 
 ## Request/response rules
 
@@ -87,10 +182,13 @@ Do not assume an optimization is faster. Measure it against the same baseline on
 - Reuse cached request bodies and parsed values.
 - Enforce `max_body_size` consistently.
 - Avoid per-request allocations on empty middleware/hook paths.
+- Avoid unnecessary repeated `setdefault()` or dictionary construction for request state.
 
 `Response` automatically supplies common headers. The Date header uses a one-second cache; do not replace it with per-response datetime formatting.
 
-`JSONResponse` must continue accepting the standard library serializer and alternate serializers that may return `bytes`.
+The common response path has explicit no-custom-header fast paths. Preserve them when changing `Response`, `JSONResponse`, `PlainTextResponse`, or `HTMLResponse`.
+
+`JSONResponse` must continue accepting the standard library serializer and alternate serializers that may return `bytes`. `app.fast()` depends on this for `orjson.dumps`.
 
 ## TestClient
 
@@ -110,13 +208,16 @@ Cross-framework TestClient numbers are rough development comparisons because cli
 For performance-sensitive changes:
 
 1. run the full tests;
-2. run `benchmarks/fast_path.py`;
+2. run `benchmarks/fast_path.py` when applicable;
 3. compare static, one-dynamic-route, and large-dynamic-route cases;
-4. profile full request handling if internal router timings improve but client timings regress;
-5. use same-runner A/B measurements for small changes;
-6. reject changes that improve one microbenchmark but introduce meaningful regressions elsewhere unless the tradeoff is explicit.
+4. add a focused microbenchmark for template, response, or registration work when relevant;
+5. profile full request handling if internal router timings improve but client timings regress;
+6. use same-runner A/B measurements for small changes;
+7. reject changes that improve one microbenchmark but introduce meaningful regressions elsewhere unless the tradeoff is explicit.
 
-Profile before making large structural changes. Typical areas to inspect are routing, route invocation, Request construction, middleware/hooks, response coercion, serialization, and adapters.
+Profile before making large structural changes. Typical areas to inspect are routing, route invocation, Request construction, middleware/hooks, response coercion, serialization, templates, and adapters.
+
+Do not compare short GitHub-hosted runs from different runners as if a few-percent difference were conclusive. For small changes, baseline and candidate should run on the same runner.
 
 ## MCP 2026-07-28
 
@@ -173,12 +274,14 @@ The Worker entrypoint normally extends `workers.WorkerEntrypoint`.
 
 Cloudflare-specific rules:
 
-- Python Workers currently run through Pyodide in Workers isolates.
+- Python Workers run through Pyodide in Workers isolates.
 - Cloudflare performs deployment-time top-level initialization and snapshots initialized WebAssembly memory.
 - Keep deterministic `app = Night()` construction and route registration at module scope.
 - Never place request-specific user state in module globals.
 - Do not perform network/binding I/O during snapshot-oriented module initialization.
 - Use Cloudflare's official `workers-runtime-sdk` conversion layer for Workers RPC values; do not build a competing serializer in Night.
+- `all-night[standard]` may install `workers-runtime-sdk` for local/full-stack development, but production Workers projects should still follow the Workers-native dependency/tooling guidance in the docs.
+- `app.fast()` does not make Workers use Uvicorn, `uvloop`, or `httptools`.
 - Treat compatibility dates/flags as runtime changes: verify current Cloudflare docs and test the template before updating them.
 - Be careful with request/response buffering because Workers have finite isolate memory.
 
@@ -220,6 +323,18 @@ Vercel rules:
 
 MCP on Vercel is just the same Night `/mcp` HTTP route; do not fork the MCP implementation by platform.
 
+## Browser Night, Node.js, and Netlify
+
+Read the relevant guides before changing these runtimes:
+
+- `docs/guides/browser.md`
+- `docs/guides/node.md`
+- `docs/operations/netlify.md`
+
+Browser Night uses Pyodide and Web-standard request/response adaptation. Node.js support uses the shared Pyodide adapter. Netlify Functions use the Node runtime adapter rather than a separate Night HTTP implementation.
+
+Do not make CPython-specific fast-mode assumptions in these runtimes.
+
 ## Validation and compatibility
 
 When changing endpoint call behavior, cover at least:
@@ -237,6 +352,15 @@ When changing endpoint call behavior, cover at least:
 
 When changing routing, cover method mismatch/405 and regex fallback as well as fast paths.
 
+When changing `app.fast()`, cover:
+
+- return-self behavior;
+- missing-standard-profile error behavior;
+- dict/list serialization through the configured serializer;
+- CLI backend selection only when modules are installed.
+
+When changing Midnight packaging, build both distributions and inspect wheel contents.
+
 When changing MCP, cover discover, list, sync call, async call, generated schema, invalid params, unknown tools, and header mismatch.
 
 ## Documentation
@@ -249,23 +373,32 @@ If public behavior changes, update:
 - Japanese docs when the change affects setup/deployment/core usage;
 - this `SKILL.md` when agent-facing architecture or workflow changes.
 
+The separate `nighthomepage` repository renders the official `all-night/main/docs` Markdown live. Update homepage-specific copy/navigation there when release positioning or navigation changes, but keep canonical documentation in `all-night/docs`.
+
 Keep `docs/README.md` canonical. `docs/readme.md` exists only for compatibility with old lowercase links.
 
 ## Release
 
-The package version is declared in `pyproject.toml`.
+The core version is declared in `pyproject.toml`. The matching Midnight version is declared in `packages/midnight/pyproject.toml`.
 
-Before publishing:
+The repository also uses `.release/version` as the release trigger/version marker.
 
-1. increment the version;
-2. run Python 3.11/3.12/3.13 CI;
-3. run benchmarks and the Cloudflare template build;
-4. build wheel + sdist and run `twine check`;
-5. ensure the target version is not already on PyPI;
-6. publish through the repository's PyPI workflow;
-7. update README/docs if the documented current release changes.
+Current release flow:
 
-Ensure all intended `py-modules` are included in the built package; MCP requires both `night` and `night_mcp` after its release.
+1. update the core and Midnight package versions together;
+2. update `.release/version` to the target version;
+3. run Python 3.11/3.12/3.13 CI plus runtime/template/deployment checks relevant to the change;
+4. build both the core and Midnight distributions;
+5. verify the core wheel excludes `night_midnight*` and the Midnight wheel contains all intended modules;
+6. run `twine check` on all distributions;
+7. merge the release changes to `main`;
+8. the release-tag workflow creates `v<version>`;
+9. the release workflow explicitly dispatches the PyPI publish workflow because tags pushed by `GITHUB_TOKEN` do not trigger a second workflow via normal push chaining;
+10. verify the PyPI publish job succeeds for both `all-night` and `all-night-midnight`.
+
+Do not rely on a bot-created tag push alone to trigger the publish workflow.
+
+Ensure all intended `py-modules` are included in the correct built package. `night_mcp` belongs to the core distribution; Midnight modules belong only to `all-night-midnight`.
 
 Never commit PyPI credentials.
 
@@ -276,7 +409,8 @@ For repository changes, report:
 - what changed;
 - tests/CI status;
 - benchmark impact for performance work;
+- core/standard/Midnight packaging impact when relevant;
 - Cloudflare template status when relevant;
-- Vercel template status when relevant;
+- Vercel/Node/Netlify/Browser runtime status when relevant;
 - MCP protocol coverage when relevant;
 - PR/merge/release state when applicable.
