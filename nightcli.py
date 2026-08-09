@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NightCLI - project tooling for Night applications.
+'''NightCLI - project tooling for Night applications.
 
 The CLI intentionally stays dependency-free.  It owns project scaffolding and
 project discovery, while the Night runtime remains responsible for serving and
