@@ -16,7 +16,7 @@ jobs:
           python-version: '3.13'
       - name: Install
         run: |
-          python -m pip install -U 'uvicorn[standard]' orjson
+          python -m pip install -U 'uvicorn[standard]' orjson pytest
           curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
           chmod +x /usr/local/bin/oha
       - name: Build baseline and experimental Night
