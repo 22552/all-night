@@ -1,0 +1,97 @@
+name: Static fastpath experiment
+on:
+  push:
+    branches: [bench/solo-runtime-comparison-2026-08-09]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install
+        run: |
+          python -m pip install -U 'uvicorn[standard]' orjson
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+      - name: Build baseline and experimental Night
+        run: |
+          cp night.py night_baseline.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py')
+          s=p.read_text()
+          old='''        self._static_method_index: dict[str, dict[str, Route]] = {}\n        self._static_methods_by_path: dict[str, set[str]] = {}'''
+          new='''        self._static_method_index: dict[str, dict[str, Route]] = {}\n        self._static_noarg_index: dict[str, dict[str, tuple[t.Callable, bool]]] = {}\n        self._static_methods_by_path: dict[str, set[str]] = {}'''
+          assert old in s
+          s=s.replace(old,new,1)
+          old='''        for method in route.methods:\n            methods.add(method)\n            self._static_method_index.setdefault(method, {})[key] = route'''
+          new='''        for method in route.methods:\n            methods.add(method)\n            self._static_method_index.setdefault(method, {})[key] = route\n            if route._night_call_kind == ROUTE_CALL_NOARGS:\n                self._static_noarg_index.setdefault(method, {})[key] = (route._night_invoke, route._night_invoke_async)'''
+          assert old in s
+          s=s.replace(old,new,1)
+          old='''        direct = self._match_direct_for_dispatch(path, method)\n        if direct is not None:\n            route, value = direct'''
+          new='''        key = path.rstrip('/') or '/'\n        noarg_routes = self._static_noarg_index.get(method)\n        direct_noarg = noarg_routes.get(key) if noarg_routes is not None else None\n        if direct_noarg is not None:\n            invoke, invoke_async = direct_noarg\n            if invoke_async:\n                resp = await invoke(req, req.path_params)\n            else:\n                resp = invoke(req, req.path_params)\n            if self.after_hooks:\n                resp = await self._run_after_hooks(req, resp)\n            return resp\n\n        direct = self._match_direct_for_dispatch(path, method)\n        if direct is not None:\n            route, value = direct'''
+          assert old in s
+          s=s.replace(old,new,1)
+          old='''        self._static_method_index.clear()\n        self._static_methods_by_path.clear()'''
+          new='''        self._static_method_index.clear()\n        self._static_noarg_index.clear()\n        self._static_methods_by_path.clear()'''
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          cat > bench_base.py <<'PY'
+          import importlib.util,sys
+          spec=importlib.util.spec_from_file_location('night_base_mod','night_baseline.py')
+          m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; spec.loader.exec_module(m)
+          app=m.Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+          cat > bench_fast.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+      - name: Tests
+        run: python -m pytest -q
+      - name: Benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+          bench(){ local name=$1 mod=$2 path=$3 run=$4; uvicorn $mod:app --host 127.0.0.1 --port 8400 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$name.log 2>&1 & pid=$!; for i in $(seq 1 120); do curl -fsS http://127.0.0.1:8400/ >/dev/null 2>&1 && break; sleep .1; done; timeout 10s oha -n 500 -c 30 --no-tui --output-format quiet http://127.0.0.1:8400/ >/dev/null; timeout 10s oha -n 8000 -c 50 --no-tui --output-format json http://127.0.0.1:8400$path > bench-results/$name-$run.json; kill -9 $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; sleep .1; }
+          for endpoint in static dynamic; do
+            [[ $endpoint == static ]] && path=/ || path=/users/42
+            for run in 1 2 3 4 5 6; do
+              if (( run % 2 == 1 )); then
+                bench base-$endpoint bench_base $path $run
+                bench fast-$endpoint bench_fast $path $run
+              else
+                bench fast-$endpoint bench_fast $path $run
+                bench base-$endpoint bench_base $path $run
+              fi
+            done
+          done
+      - name: Summary
+        run: |
+          python - <<'PY'
+          import json,statistics
+          for e in ('static','dynamic'):
+            print('\n'+e.upper())
+            vals={}
+            for n in ('base','fast'):
+              xs=[json.load(open(f'bench-results/{n}-{e}-{r}.json'))['summary']['requestsPerSec'] for r in range(1,7)]
+              vals[n]=statistics.median(xs)
+              print(n, f'{vals[n]:.1f}', ','.join(f'{x:.0f}' for x in xs))
+            print('delta', f'{(vals["fast"]/vals["base"]-1)*100:+.2f}%')
+          PY
