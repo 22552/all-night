@@ -1,24 +1,32 @@
 # Midnight
 
-Midnight is Night's Python/browser UI runtime. It is shipped directly inside the `all-night` distribution as `night_midnight` plus the standalone browser runtime `midnight.js`.
+Midnight is Night's Python/browser UI runtime, distributed separately as `all-night-midnight`.
 
-Install Night normally:
+Install the Night core by itself:
 
 ```bash
 python -m pip install -U all-night
 ```
 
-For a CPython server with the recommended WebSocket stack:
+For a CPython server with Night's recommended server/runtime dependencies:
 
 ```bash
 python -m pip install -U "all-night[standard]"
 ```
 
-Do not install the old standalone `all-night-midnight` package alongside current Night. Midnight is integrated into `all-night` and both distributions providing `night_midnight.py` can collide in one environment.
+`all-night[standard]` does **not** install Midnight. The `standard` extra contains server/runtime dependencies such as `uvicorn[standard]`, `orjson`, and the Workers runtime SDK.
+
+Install Midnight separately:
+
+```bash
+python -m pip install -U all-night-midnight
+```
+
+`all-night-midnight` depends on the matching `all-night` release and owns `night_midnight.py`, `night_midnight_scope.py`, the additional Midnight helper modules, and `midnight.js`. The core `all-night` wheel does not ship those files, avoiding two distributions owning the same module path.
 
 ## UI Midnight
 
-Normal Midnight commands still target the current UI context. Existing code does not need a delivery scope:
+Normal Midnight commands target the current UI context. Existing code does not need a delivery scope:
 
 ```python
 from night_midnight import CompiledMidnight
