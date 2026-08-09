@@ -418,10 +418,105 @@
     if (socket) socket.close(Number(code), String(reason));
   }
 
+  function eachElement(selector, callback) {
+    const elements = [...document.querySelectorAll(String(selector))];
+    for (const element of elements) callback(element);
+    return elements.length;
+  }
+
+  function setStyle(selector, styles) {
+    if (!styles || typeof styles !== "object") throw new TypeError("midnight.style() expects a style object");
+    return eachElement(selector, element => {
+      for (const [name, value] of Object.entries(styles)) {
+        if (value == null) {
+          if (String(name).startsWith("--")) element.style.removeProperty(String(name));
+          else element.style[String(name)] = "";
+          continue;
+        }
+        if (String(name).startsWith("--") || String(name).includes("-")) {
+          element.style.setProperty(String(name), String(value));
+        } else {
+          element.style[String(name)] = String(value);
+        }
+      }
+    });
+  }
+
+  function hide(selector) {
+    return eachElement(selector, element => {
+      if (element.style.display !== "none") element.dataset.midnightDisplay = element.style.display || "";
+      element.style.display = "none";
+    });
+  }
+
+  function show(selector, display = null) {
+    return eachElement(selector, element => {
+      if (display != null) {
+        element.style.display = String(display);
+      } else if (Object.prototype.hasOwnProperty.call(element.dataset, "midnightDisplay")) {
+        element.style.display = element.dataset.midnightDisplay;
+        delete element.dataset.midnightDisplay;
+      } else {
+        element.style.removeProperty("display");
+        if (getComputedStyle(element).display === "none") element.style.display = "block";
+      }
+    });
+  }
+
+  function toggle(selector, force = null, display = null) {
+    let changed = 0;
+    for (const element of document.querySelectorAll(String(selector))) {
+      const hidden = getComputedStyle(element).display === "none";
+      const shouldShow = force == null ? hidden : Boolean(force);
+      if (shouldShow) showElement(element, display);
+      else hideElement(element);
+      changed += 1;
+    }
+    return changed;
+  }
+
+  function hideElement(element) {
+    if (element.style.display !== "none") element.dataset.midnightDisplay = element.style.display || "";
+    element.style.display = "none";
+  }
+
+  function showElement(element, display = null) {
+    if (display != null) {
+      element.style.display = String(display);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(element.dataset, "midnightDisplay")) {
+      element.style.display = element.dataset.midnightDisplay;
+      delete element.dataset.midnightDisplay;
+      return;
+    }
+    element.style.removeProperty("display");
+    if (getComputedStyle(element).display === "none") element.style.display = "block";
+  }
+
+  function css(cssText, id = "default") {
+    const key = String(id || "default");
+    const styleId = `midnight-css-${key.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    let element = document.getElementById(styleId);
+    if (!element) {
+      element = document.createElement("style");
+      element.id = styleId;
+      element.dataset.midnightCss = key;
+      (document.head || document.documentElement).appendChild(element);
+    }
+    element.textContent = String(cssText ?? "");
+    return element;
+  }
+
   window.midnight = Object.freeze({
     connectTransport,
     disconnectTransport,
     tabId: state.tabId,
+    style: setStyle,
+    show,
+    hide,
+    toggle,
+    css,
     emit(name, detail = null) {
       sendEvent({ type: `custom:${name}`, selector: null, detail });
     },
