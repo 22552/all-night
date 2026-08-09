@@ -2238,6 +2238,45 @@ class Night(Router):
         self._fast_mode = True
         return self
 
+    def send_file(
+        self,
+        path: str,
+        route: str,
+        *,
+        status: int = 200,
+        headers: t.Mapping[str, str] | None = None,
+        download_name: str | None = None,
+        cache_seconds: int | None = 3600,
+        gzip: bool | None = None,
+        name: str | None = None,
+    ):
+        """Publish one file at a GET route and return the registered handler.
+
+        ``app.send_file("logo.png", "logo")`` publishes ``logo.png`` at
+        ``/logo``. A leading slash in ``route`` is optional. The global
+        :func:`send_file` helper remains the response builder used inside
+        handlers.
+        """
+        route_path = "/" + str(route).lstrip("/")
+        file_path = os.fspath(path)
+
+        @self.get(route_path, name=name)
+        def _night_published_file():
+            handler = send_file(
+                file_path,
+                status=status,
+                headers=dict(headers) if headers else None,
+                download_name=download_name,
+                cache_seconds=cache_seconds,
+            )
+            if gzip is True:
+                handler.gz()
+            elif gzip is False:
+                handler.raw()
+            return handler
+
+        return _night_published_file
+
     def gz(self, level: int = 6):
         """Enable gzip by default for send_file() and static() responses."""
         level = int(level)
