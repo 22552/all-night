@@ -1,0 +1,70 @@
+name: Robyn fast check
+
+on:
+  push:
+    branches: [bench/solo-runtime-comparison-2026-08-09]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install
+        run: |
+          python -m pip install -U 'uvicorn[standard]' robyn orjson
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+      - name: Apps
+        run: |
+          cat > bench_night_fast2.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+          cat > bench_robyn_sync.py <<'PY'
+          from robyn import Robyn
+          app=Robyn(__file__)
+          @app.get('/')
+          def root(): return {'message':'hello'}
+          @app.get('/users/:user_id')
+          def user(request): return {'id':int(request.path_params['user_id'])}
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8300)
+          PY
+      - name: Bench
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+          bench(){ local name=$1 cmd=$2 endpoint=$3 run=$4; bash -c "$cmd" >/tmp/$name.log 2>&1 & pid=$!; for i in $(seq 1 150); do curl -fsS http://127.0.0.1:8300/ >/dev/null 2>&1 && break; sleep .1; done; curl -fsS http://127.0.0.1:8300/ >/dev/null; timeout 10s oha -n 500 -c 30 --no-tui --output-format quiet http://127.0.0.1:8300/ >/dev/null; [[ $endpoint == static ]] && path=/ || path=/users/42; timeout 10s oha -n 5000 -c 50 --no-tui --output-format json http://127.0.0.1:8300$path > bench-results/$name-$endpoint-$run.json; kill -9 $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; sleep .15; }
+          for endpoint in static dynamic; do
+            for run in 1 2 3 4; do
+              if (( run % 2 == 1 )); then
+                bench nightfast "uvicorn bench_night_fast2:app --host 127.0.0.1 --port 8300 --workers 1 --no-access-log --loop uvloop --http httptools" $endpoint $run
+                bench robynfast "python bench_robyn_sync.py --fast --disable-openapi" $endpoint $run
+              else
+                bench robynfast "python bench_robyn_sync.py --fast --disable-openapi" $endpoint $run
+                bench nightfast "uvicorn bench_night_fast2:app --host 127.0.0.1 --port 8300 --workers 1 --no-access-log --loop uvloop --http httptools" $endpoint $run
+              fi
+            done
+          done
+      - name: Summary
+        run: |
+          python - <<'PY'
+          import json,statistics
+          for e in ('static','dynamic'):
+            print('\n'+e.upper())
+            for n in ('nightfast','robynfast'):
+              xs=[json.load(open(f'bench-results/{n}-{e}-{r}.json'))['summary']['requestsPerSec'] for r in (1,2,3,4)]
+              print(n, f'{statistics.median(xs):.1f}', ','.join(f'{x:.0f}' for x in xs))
+          PY
