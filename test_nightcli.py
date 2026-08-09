@@ -32,6 +32,10 @@ class NightCLITests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("GET                  /health", output)
 
+            code, output = self.run_cli("routes", "--project", str(root), "--format", "json")
+            self.assertEqual(code, 0)
+            self.assertIn('"path": "/health"', output)
+
             code, output = self.run_cli("openapi", "--project", str(root))
             self.assertEqual(code, 0)
             self.assertIn("Wrote OpenAPI document", output)
@@ -51,6 +55,21 @@ class NightCLITests(unittest.TestCase):
             from nightcli import project_root
 
             self.assertEqual(project_root(nested), root)
+
+
+    def test_existing_project_can_be_initialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "existing"
+            root.mkdir()
+            (root / "app.py").write_text("from night import Night\napp = Night()\n", encoding="utf-8")
+
+            code, output = self.run_cli("init", "--path", str(root), "--app", "app:app")
+            self.assertEqual(code, 0)
+            self.assertIn("Initialized Night project", output)
+
+            code, output = self.run_cli("check", "--project", str(root))
+            self.assertEqual(code, 0)
+            self.assertIn("0 HTTP route(s)", output)
 
 
 if __name__ == "__main__":
