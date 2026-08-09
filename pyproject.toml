@@ -33,6 +33,7 @@ Repository = "https://github.com/22552/all-night"
 
 [project.scripts]
 night = "night:cli"
+nightcli = "nightcli:main"
 
 [tool.setuptools]
-py-modules = ["night", "night_mcp", "night_web", "night_request_info", "night_cloudflare"]
+py-modules = ["night", "nightcli", "night_mcp", "night_web", "night_request_info", "night_cloudflare"]

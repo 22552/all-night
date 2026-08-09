@@ -46,6 +46,26 @@ or any ASGI server:
 uvicorn app:app --reload
 ```
 
+
+## NightCLI
+
+`nightcli` manages a Night project through a small, portable `night.toml`.
+It creates a project without forcing a hosting platform and can validate the
+configured application before it is deployed.
+
+```bash
+nightcli new my-api --template api
+cd my-api
+nightcli doctor
+nightcli check
+nightcli routes --format json
+nightcli dev
+```
+
+Templates are `api`, `site`, `midnight`, and `cloudflare`. Use
+`nightcli info` to inspect the nearest project, or pass
+`--project path/to/project` from elsewhere. `nightcli openapi` writes the app's OpenAPI document to `openapi.json` (or a project-relative `--output` path).
+
 ## Fast mode
 
 With the standard profile installed, enable Night's optional CPython fast path with `app.fast()`:
