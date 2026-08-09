@@ -161,6 +161,20 @@ def load_app(root: Path, target: str) -> Any:
         sys.path[:] = old_path
 
 
+def command_init(args: argparse.Namespace) -> int:
+    root = Path(args.path or ".").expanduser().resolve()
+    config_path = root / CONFIG_NAME
+    if config_path.exists():
+        raise CLIError(f"{config_path} already exists; refusing to overwrite it.")
+    root.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        PROJECT_TOML.format(name=args.name or root.name, template="custom", app=args.app),
+        encoding="utf-8",
+    )
+    print(f"Initialized Night project: {root}")
+    return 0
+
+
 def command_new(args: argparse.Namespace) -> int:
     destination = Path(args.path or args.name).expanduser().resolve()
     if destination.exists():
@@ -217,11 +231,56 @@ def command_routes(args: argparse.Namespace) -> int:
     routes = getattr(app, "routes", None)
     if routes is None:
         raise CLIError("Target does not look like a Night application.")
+    websocket_routes = getattr(app, "websocket_routes", [])
+    if args.format == "json":
+        document = {
+            "http": [
+                {
+                    "methods": sorted(route.methods),
+                    "path": route.raw_path,
+                    "name": getattr(route, "name", None),
+                }
+                for route in routes
+            ],
+            "websocket": [
+                {"path": route.raw_path, "name": getattr(route, "name", None)}
+                for route in websocket_routes
+            ],
+        }
+        print(json.dumps(document, indent=2, ensure_ascii=False))
+        return 0
     for route in routes:
         print(f"{','.join(sorted(route.methods)):20} {route.raw_path}")
-    for route in getattr(app, "websocket_routes", []):
+    for route in websocket_routes:
         print(f"WEBSOCKET             {route.raw_path}")
     return 0
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    checks = [
+        ("Python 3.11+", sys.version_info >= (3, 11), sys.version.split()[0]),
+        ("Night", importlib.util.find_spec("night") is not None, "framework import"),
+        ("Uvicorn", importlib.util.find_spec("uvicorn") is not None, "local ASGI server"),
+        ("orjson", importlib.util.find_spec("orjson") is not None, "app.fast() serializer"),
+        ("uvloop", importlib.util.find_spec("uvloop") is not None, "Unix event-loop accelerator"),
+        ("httptools", importlib.util.find_spec("httptools") is not None, "HTTP parser accelerator"),
+        ("websockets", importlib.util.find_spec("websockets") is not None, "WebSocket support"),
+    ]
+    required_failed = False
+    for label, available, detail in checks:
+        state = "OK" if available else ("FAIL" if label in {"Python 3.11+", "Night"} else "optional")
+        print(f"{state:8} {label:14} {detail}")
+        required_failed = required_failed or (state == "FAIL")
+    if args.project:
+        root, config = require_project(args.project)
+        try:
+            load_app(root, app_target(config, args.app))
+        except CLIError as exc:
+            print(f"FAIL     Application    {exc}")
+            required_failed = True
+        else:
+            print("OK       Application    configured target imports")
+    return 1 if required_failed else 0
 
 
 def command_openapi(args: argparse.Namespace) -> int:
@@ -262,6 +321,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    init = sub.add_parser("init", help="Add night.toml to an existing project")
+    init.add_argument("--path", help="Project directory (defaults to current directory)")
+    init.add_argument("--name", help="Project name (defaults to directory name)")
+    init.add_argument("--app", default="app:app", help="Configured app target")
+    init.set_defaults(handler=command_init)
+
     new = sub.add_parser("new", help="Create a Night project")
     new.add_argument("name", help="Project name")
     new.add_argument("--template", choices=TEMPLATES, default="api")
@@ -270,20 +335,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name, handler, help_text in (
         ("run", command_run, "Run the local ASGI development server"),
+        ("dev", command_run, "Run the development server with reload"),
         ("check", command_check, "Import and validate the configured Night app"),
         ("routes", command_routes, "Print application routes"),
         ("openapi", command_openapi, "Write the application's OpenAPI document"),
         ("info", command_info, "Show project configuration"),
+        ("doctor", command_doctor, "Check Night and local development dependencies"),
     ):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--project", help="Project root; defaults to nearest night.toml")
         command.add_argument("--app", help="Override configured app target")
         if name == "openapi":
             command.add_argument("--output", default="openapi.json", help="Project-relative output path")
-        if name == "run":
+        if name == "routes":
+            command.add_argument("--format", choices=("text", "json"), default="text")
+        if name in {"run", "dev"}:
             command.add_argument("--host", help="Host to bind")
             command.add_argument("--port", type=int, help="Port to bind")
-            command.add_argument("--reload", action="store_true", help="Reload when source files change")
+            command.add_argument("--reload", action="store_true", default=(name == "dev"), help="Reload when source files change")
         command.set_defaults(handler=handler)
     return parser
 
