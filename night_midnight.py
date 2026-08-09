@@ -1,7 +1,7 @@
 """Midnight: Night's bidirectional Python/browser UI runtime.
 
-The core Midnight runtime, hybrid DOM expressions, and client compilation live
-in this module. Direct browser WebSocket transport lives in ``night_midnight_ws``.
+Python-side Midnight, hybrid expressions, client compilation, and the direct
+WebSocket adapter live here. The browser runtime lives in ``midnight.js``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,10 @@ import html as _html
 import inspect
 import json
 import operator
+from pathlib import Path
 import re
+import secrets
+import sys
 import time
 import typing as t
 
@@ -809,6 +812,75 @@ class CompiledMidnight(HybridMidnight):
         return decorate if fn is None else decorate(fn)
 
 
+class MidnightWebSocketAdapter:
+    """Serve one Midnight instance over a Night WebSocket route."""
+
+    def __init__(self, midnight: Midnight) -> None:
+        self.midnight = midnight
+
+    async def serve(self, ws: t.Any) -> None:
+        session_id = trusted_session_id(secrets.token_urlsafe(24))
+        await ws.accept()
+        await ws.send_json(
+            {
+                "type": "midnight-config",
+                "subscriptions": self.midnight.subscriptions(),
+            }
+        )
+        try:
+            while True:
+                message = await ws.receive_json()
+                if not isinstance(message, dict) or message.get("type") != "midnight-event":
+                    await ws.send_json(
+                        {
+                            "type": "midnight-error",
+                            "error": "expected midnight-event",
+                        }
+                    )
+                    continue
+                payload = message.get("event")
+                if not isinstance(payload, dict):
+                    await ws.send_json(
+                        {
+                            "type": "midnight-error",
+                            "error": "event must be an object",
+                        }
+                    )
+                    continue
+                commands = await self.midnight.dispatch_trusted(session_id, payload)
+                await ws.send_json(
+                    {
+                        "type": "midnight-commands",
+                        "event_id": message.get("event_id"),
+                        "commands": commands,
+                    }
+                )
+        except ConnectionError:
+            return
+        finally:
+            self.midnight.drop_session(session_id)
+
+
+async def serve_midnight_ws(midnight: Midnight, ws: t.Any) -> None:
+    await MidnightWebSocketAdapter(midnight).serve(ws)
+
+
+def midnight_js_path() -> Path:
+    """Return the installed/source path to Midnight's browser runtime."""
+    candidates = (
+        Path(__file__).with_name("midnight.js"),
+        Path(sys.prefix) / "midnight.js",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("midnight.js is not installed next to Night or in the environment prefix")
+
+
+def read_midnight_js(*, encoding: str = "utf-8") -> str:
+    return midnight_js_path().read_text(encoding=encoding)
+
+
 def get(selector: str, *, midnight: HybridMidnight | None = None) -> DOMRef:
     if midnight is None:
         raise RuntimeError("get() needs midnight=...; prefer midnight.get(selector)")
@@ -858,11 +930,15 @@ __all__ = [
     "MidnightCompileError",
     "MidnightSession",
     "MidnightTemplateEngine",
+    "MidnightWebSocketAdapter",
     "TrustedSessionId",
     "get",
     "get_default_midnight",
     "js",
     "midnight",
+    "midnight_js_path",
+    "read_midnight_js",
     "reset_default_midnight",
+    "serve_midnight_ws",
     "trusted_session_id",
 ]

@@ -1,7 +1,11 @@
 import asyncio
 
-from night_midnight import CompiledMidnight, js
-from night_midnight_ws import MIDNIGHT_WS_RUNTIME, MidnightWebSocketAdapter
+from night_midnight import (
+    CompiledMidnight,
+    MidnightWebSocketAdapter,
+    js,
+    read_midnight_js,
+)
 
 
 class FakeWebSocket:
@@ -35,11 +39,12 @@ def _compiled_midnight():
 
 
 def test_direct_runtime_uses_websocket_not_fetch():
-    assert "new WebSocket" in MIDNIGHT_WS_RUNTIME
-    assert "connectTransport" in MIDNIGHT_WS_RUNTIME
-    assert "fetch(" not in MIDNIGHT_WS_RUNTIME
-    assert "compiled_install" in MIDNIGHT_WS_RUNTIME
-    assert "hybrid_server_set" in MIDNIGHT_WS_RUNTIME
+    runtime = read_midnight_js()
+    assert "new WebSocket" in runtime
+    assert "connectTransport" in runtime
+    assert "fetch(" not in runtime
+    assert "compiled_install" in runtime
+    assert "hybrid_server_set" in runtime
 
 
 def test_adapter_sends_config_and_compiled_commands():

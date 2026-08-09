@@ -1,20 +1,4 @@
-"""Direct browser WebSocket transport for Midnight.
-
-This module is the normal CPython/server counterpart to Browser Night's
-postMessage adapter. It connects browser DOM events and Midnight commands over
-one persistent WebSocket, while keeping the core :mod:`night_midnight` runtime
-transport-independent.
-"""
-
-from __future__ import annotations
-
-import secrets
-import typing as t
-
-from night_midnight import Midnight, trusted_session_id
-
-
-MIDNIGHT_WS_RUNTIME = r'''(() => {
+(() => {
   const state = {
     socket: null,
     url: null,
@@ -442,67 +426,4 @@ MIDNIGHT_WS_RUNTIME = r'''(() => {
   });
 
   runtimeEvent("ready", null);
-})();'''
-
-
-class MidnightWebSocketAdapter:
-    """Serve one :class:`Midnight` instance over a Night WebSocket route.
-
-    The adapter mints an unguessable server-side session identifier for each
-    accepted socket and binds every event on that socket to that trusted
-    session. Reconnects currently create a new logical server session; browser
-    compiled programs remain cached for the lifetime of the page.
-    """
-
-    def __init__(self, midnight: Midnight) -> None:
-        self.midnight = midnight
-
-    async def serve(self, ws: t.Any) -> None:
-        session_id = trusted_session_id(secrets.token_urlsafe(24))
-        await ws.accept()
-        await ws.send_json(
-            {
-                "type": "midnight-config",
-                "subscriptions": self.midnight.subscriptions(),
-            }
-        )
-        try:
-            while True:
-                message = await ws.receive_json()
-                if not isinstance(message, dict) or message.get("type") != "midnight-event":
-                    await ws.send_json(
-                        {
-                            "type": "midnight-error",
-                            "error": "expected midnight-event",
-                        }
-                    )
-                    continue
-                payload = message.get("event")
-                if not isinstance(payload, dict):
-                    await ws.send_json(
-                        {
-                            "type": "midnight-error",
-                            "error": "event must be an object",
-                        }
-                    )
-                    continue
-                commands = await self.midnight.dispatch_trusted(session_id, payload)
-                await ws.send_json(
-                    {
-                        "type": "midnight-commands",
-                        "event_id": message.get("event_id"),
-                        "commands": commands,
-                    }
-                )
-        except ConnectionError:
-            return
-        finally:
-            self.midnight.drop_session(session_id)
-
-
-async def serve_midnight_ws(midnight: Midnight, ws: t.Any) -> None:
-    """Convenience one-shot adapter for ``@app.websocket`` routes."""
-    await MidnightWebSocketAdapter(midnight).serve(ws)
-
-
-__all__ = ["MIDNIGHT_WS_RUNTIME", "MidnightWebSocketAdapter", "serve_midnight_ws"]
+})();
