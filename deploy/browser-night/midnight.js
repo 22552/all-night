@@ -3,6 +3,9 @@
     subscriptions: [],
     listeners: new Map(),
     sockets: new Map(),
+    socketConfigs: new Map(),
+    socketReconnectTimers: new Map(),
+    socketReconnectAttempts: new Map(),
     persistence: new Map(),
   };
 
@@ -98,13 +101,63 @@
     return { type, socket_id: socketId, ...extra };
   }
 
+  function clearReconnectTimer(socketId) {
+    const timer = state.socketReconnectTimers.get(socketId);
+    if (timer != null) clearTimeout(timer);
+    state.socketReconnectTimers.delete(socketId);
+  }
+
+  function scheduleReconnect(socketId, config) {
+    if (!config || !config.reconnect || config.closed) return;
+    clearReconnectTimer(socketId);
+    const attempt = (state.socketReconnectAttempts.get(socketId) || 0) + 1;
+    state.socketReconnectAttempts.set(socketId, attempt);
+    const base = Math.max(0, Number(config.reconnectDelayMs ?? 500));
+    const cap = Math.max(base, Number(config.reconnectMaxDelayMs ?? 5000));
+    const delay = Math.min(cap, base * (2 ** Math.max(0, attempt - 1)));
+    post("midnight-ws", socketPayload(socketId, "reconnect", { attempt, delay }));
+    const timer = setTimeout(() => {
+      state.socketReconnectTimers.delete(socketId);
+      if (state.socketConfigs.get(socketId) !== config || config.closed) return;
+      connect(config.url, { ...config, socketId, _reconnect: true });
+    }, delay);
+    state.socketReconnectTimers.set(socketId, timer);
+  }
+
   function connect(url, options = {}) {
     const socketId = String(options.socketId ?? options.socket_id ?? "default");
-    const protocols = options.protocols;
-    state.sockets.get(socketId)?.close(1000, "replaced");
-    const ws = protocols?.length ? new WebSocket(url, protocols) : new WebSocket(url);
+    const isReconnect = Boolean(options._reconnect);
+    let config;
+    if (isReconnect) {
+      config = state.socketConfigs.get(socketId);
+      if (!config || config.closed) return null;
+    } else {
+      config = {
+        url: String(url),
+        protocols: Array.isArray(options.protocols) ? [...options.protocols] : [],
+        reconnect: options.reconnect !== false,
+        reconnectDelayMs: Math.max(0, Number(options.reconnectDelayMs ?? options.reconnect_delay_ms ?? 500)),
+        reconnectMaxDelayMs: Math.max(0, Number(options.reconnectMaxDelayMs ?? options.reconnect_max_delay_ms ?? 5000)),
+        closed: false,
+      };
+      config.reconnectMaxDelayMs = Math.max(config.reconnectDelayMs, config.reconnectMaxDelayMs);
+      clearReconnectTimer(socketId);
+      state.socketReconnectAttempts.set(socketId, 0);
+      state.socketConfigs.set(socketId, config);
+      const previous = state.sockets.get(socketId);
+      if (previous) {
+        state.sockets.delete(socketId);
+        previous.close(1000, "replaced");
+      }
+    }
+
+    const protocols = config.protocols;
+    const ws = protocols.length ? new WebSocket(config.url, protocols) : new WebSocket(config.url);
     state.sockets.set(socketId, ws);
-    ws.addEventListener("open", () => post("midnight-ws", socketPayload(socketId, "open", { url: ws.url })));
+    ws.addEventListener("open", () => {
+      state.socketReconnectAttempts.set(socketId, 0);
+      post("midnight-ws", socketPayload(socketId, "open", { url: ws.url }));
+    });
     ws.addEventListener("message", event => {
       let json = null;
       if (typeof event.data === "string") {
@@ -121,7 +174,12 @@
         reason: event.reason,
         clean: event.wasClean,
       }));
-      if (state.sockets.get(socketId) === ws) state.sockets.delete(socketId);
+      if (state.sockets.get(socketId) === ws) {
+        state.sockets.delete(socketId);
+        if (state.socketConfigs.get(socketId) === config && !config.closed) {
+          scheduleReconnect(socketId, config);
+        }
+      }
     });
     ws.addEventListener("error", () => post("midnight-ws", socketPayload(socketId, "error")));
     return ws;
@@ -137,8 +195,15 @@
   }
 
   function close(socketId = "default", code = 1000, reason = "") {
-    const ws = state.sockets.get(String(socketId));
-    if (!ws) return false;
+    socketId = String(socketId);
+    const config = state.socketConfigs.get(socketId);
+    if (config) config.closed = true;
+    clearReconnectTimer(socketId);
+    state.socketConfigs.delete(socketId);
+    state.socketReconnectAttempts.delete(socketId);
+    const ws = state.sockets.get(socketId);
+    if (!ws) return Boolean(config);
+    state.sockets.delete(socketId);
     ws.close(Number(code), String(reason));
     return true;
   }
@@ -288,7 +353,13 @@
         void flushPersist({ key: command.key ?? null });
         break;
       case "ws_connect":
-        connect(command.url, { socketId: command.socket_id, protocols: command.protocols || [] });
+        connect(command.url, {
+          socketId: command.socket_id,
+          protocols: command.protocols || [],
+          reconnect: command.reconnect !== false,
+          reconnectDelayMs: command.reconnect_delay_ms,
+          reconnectMaxDelayMs: command.reconnect_max_delay_ms,
+        });
         break;
       case "ws_send":
         send(command.data, command.socket_id);

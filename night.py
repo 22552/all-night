@@ -27,6 +27,7 @@ import contextvars
 import dataclasses
 import datetime as _dt
 import email.utils
+import functools
 import gzip
 import hashlib
 import hmac
@@ -2249,6 +2250,88 @@ class Night(Router):
         self._json_dumps = orjson.dumps
         self._fast_mode = True
         return self
+
+    def cache(self, fn: t.Callable | None = None, *, ttl: float | None = None):
+        """Cache a no-argument endpoint's completed response.
+
+        Use ``@app.get(...)`` above ``@app.cache``/``@app.cache()``. The first
+        cacheable response is snapshotted after serialization and later hits
+        receive a fresh mutable Response clone, so HEAD/cookies cannot mutate
+        the shared cached value. ``ttl=None`` keeps it until process exit.
+        """
+        if ttl is not None and float(ttl) < 0:
+            raise ValueError("cache ttl must be >= 0 or None")
+        lifetime = None if ttl is None else float(ttl)
+
+        def decorator(endpoint: t.Callable):
+            try:
+                signature = inspect.signature(endpoint)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None and signature.parameters:
+                raise TypeError("@app.cache only supports no-argument endpoints")
+
+            cached: tuple[float, int, bytes, dict[str, str], tuple[tuple[str, str], ...]] | None = None
+
+            def restore(snapshot):
+                _created, status, body, headers, raw_headers = snapshot
+                response = object.__new__(Response)
+                response.status = status
+                response.body = body
+                response.headers = dict(headers)
+                response.raw_headers = list(raw_headers)
+                return response
+
+            def fresh(snapshot) -> bool:
+                return lifetime is None or time.monotonic() - snapshot[0] < lifetime
+
+            def store(value):
+                nonlocal cached
+                response = self._coerce_response(value)
+                has_cookie = "set-cookie" in response.headers or any(
+                    str(key).lower() == "set-cookie" for key, _ in response.raw_headers
+                )
+                if 200 <= response.status < 400 and not has_cookie:
+                    cached = (
+                        time.monotonic(),
+                        response.status,
+                        response.body,
+                        dict(response.headers),
+                        tuple(response.raw_headers),
+                    )
+                    return restore(cached)
+                return response
+
+            if inspect.iscoroutinefunction(endpoint):
+                @functools.wraps(endpoint)
+                async def async_cached():
+                    nonlocal cached
+                    snapshot = cached
+                    if snapshot is not None and fresh(snapshot):
+                        return restore(snapshot)
+                    cached = None
+                    return store(await endpoint())
+                async_cached.cache_clear = lambda: _clear()
+                wrapper = async_cached
+            else:
+                @functools.wraps(endpoint)
+                def sync_cached():
+                    nonlocal cached
+                    snapshot = cached
+                    if snapshot is not None and fresh(snapshot):
+                        return restore(snapshot)
+                    cached = None
+                    return store(endpoint())
+                sync_cached.cache_clear = lambda: _clear()
+                wrapper = sync_cached
+
+            def _clear():
+                nonlocal cached
+                cached = None
+
+            return wrapper
+
+        return decorator if fn is None else decorator(fn)
 
     def send_file(
         self,

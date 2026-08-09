@@ -194,3 +194,19 @@ authenticated connection ID -> TrustedSessionId -> ContextVar
 ```
 
 Midnight keeps the local DOM bridge separate from WebSocket so a Browser Night page does not need to create a network socket merely to communicate with the Python runtime in the same tab.
+
+
+## WebSocket reconnect
+
+Midnight WebSockets reconnect automatically after an unexpected close. Reconnect uses capped exponential backoff and resets after a successful `open`:
+
+```python
+midnight.ws_connect(
+    "wss://example.com/live",
+    reconnect=True,
+    reconnect_delay=0.5,
+    reconnect_max_delay=5.0,
+)
+```
+
+`reconnect=False` disables this behavior. Calling `midnight.ws_close()` is treated as an explicit close and cancels pending reconnects. `@midnight.on_ws("reconnect")` can observe retry attempts; its payload includes `attempt` and `delay` (milliseconds). Normal `open`, `message`, `close`, and `error` events are unchanged.
