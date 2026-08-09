@@ -1,0 +1,62 @@
+name: Coerce fastpath
+
+on:
+  push:
+    branches: [perf/coerce-fastpath]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bench:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/coerce-fastpath
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Save baseline and patch
+        run: |
+          cp night.py /tmp/night_baseline.py
+          python tools/coerce_fastpath.py
+      - name: Test
+        run: |
+          python -m pip install -U pytest
+          PYTHONPATH=. pytest -q
+      - name: Coercion A/B
+        run: |
+          python - <<'PY'
+          import importlib.util, statistics, sys, time
+          def load(name, path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              mod=importlib.util.module_from_spec(spec)
+              sys.modules[name]=mod
+              spec.loader.exec_module(mod)
+              return mod
+          base=load('night_base_coerce','/tmp/night_baseline.py')
+          import night as fast
+          ba, fa=base.Night(), fast.Night()
+          values=[{'ok':True}, 'hello', b'hello', None]
+          def bench(app, value, n=500_000):
+              f=app._coerce_response
+              t=time.perf_counter()
+              for _ in range(n): f(value)
+              return n/(time.perf_counter()-t)
+          for value in values:
+              b=[bench(ba,value) for _ in range(5)]
+              f=[bench(fa,value) for _ in range(5)]
+              bm,fm=statistics.median(b),statistics.median(f)
+              print(type(value).__name__,f'base={bm:.1f}',f'fast={fm:.1f}',f'change={(fm/bm-1)*100:+.2f}%')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add night.py
+          git commit -m 'prioritize common response coercion types'
+          git push origin HEAD:perf/coerce-fastpath
