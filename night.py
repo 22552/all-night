@@ -2341,7 +2341,7 @@ class Night(Router):
         return value
 
     def _match_direct_for_dispatch(self, path: str, method: str):
-        key = path.rstrip('/') or '/'
+        key = path if path == '/' or not path.endswith('/') else path.rstrip('/')
 
         method_routes = self._static_method_index.get(method)
         if method_routes is not None:
