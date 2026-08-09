@@ -1,0 +1,68 @@
+name: Hotpath next
+
+on:
+  push:
+    branches: [perf/hotpath-next]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bench:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/hotpath-next
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Save baseline and apply patch
+        run: |
+          cp night.py /tmp/night_baseline.py
+          python tools/hotpath_next.py
+      - name: Test
+        run: |
+          python -m pip install -U pytest uvicorn
+          PYTHONPATH=. pytest -q
+      - name: In-process A/B
+        run: |
+          python - <<'PY'
+          import importlib.util, sys, time, statistics
+          def load(name, path):
+              spec = importlib.util.spec_from_file_location(name, path)
+              mod = importlib.util.module_from_spec(spec)
+              sys.modules[name] = mod
+              spec.loader.exec_module(mod)
+              return mod
+          base = load('night_base_bench', '/tmp/night_baseline.py')
+          import night as fast
+          def app(mod):
+              a = mod.Night()
+              @a.get('/hello')
+              def hello(): return {'ok': True}
+              @a.get('/users/<int:user_id>')
+              def user(user_id: int): return {'id': user_id}
+              return a
+          ba, fa = app(base), app(fast)
+          def bench_match(a, path, n=1_000_000):
+              f=a._match_direct_for_dispatch
+              t=time.perf_counter()
+              for _ in range(n): f(path, 'GET')
+              return n/(time.perf_counter()-t)
+          for path in ('/hello','/users/42','/hello/'):
+              b=[bench_match(ba,path) for _ in range(5)]
+              f=[bench_match(fa,path) for _ in range(5)]
+              bm, fm=statistics.median(b), statistics.median(f)
+              print(path, f'base={bm:.1f}', f'fast={fm:.1f}', f'change={(fm/bm-1)*100:+.2f}%')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add night.py
+          git commit -m 'avoid unnecessary route path trimming'
+          git push origin HEAD:perf/hotpath-next
