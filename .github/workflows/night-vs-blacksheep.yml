@@ -30,24 +30,25 @@ jobs:
           async def echo(req): return await req.json()
           PY
           cat > bench_bs.py <<'PY'
-          from blacksheep import Application, json, text
+          from blacksheep import Application, Request, get, post, json, text
           app=Application()
-          @app.router.get('/text')
-          async def text_route(): return text('hello world')
-          @app.router.get('/json')
-          async def json_route(): return json({'ok':True,'name':'night','n':42})
-          @app.router.get('/users/{user_id:int}')
-          async def dynamic_route(user_id:int): return json({'id':user_id,'ok':True})
-          @app.router.post('/echo')
-          async def echo(request):
+          @get('/text')
+          def text_route(): return text('hello world')
+          @get('/json')
+          def json_route(): return json({'ok':True,'name':'night','n':42})
+          @get('/users/{user_id}')
+          def dynamic_route(user_id:int): return json({'id':user_id,'ok':True})
+          @post('/echo')
+          async def echo(request: Request):
               data=await request.json()
               return json(data)
           PY
+          python -m py_compile bench_night.py bench_bs.py
       - name: Benchmark
         run: |
           set -euo pipefail
           mkdir -p r
-          bench(){ local fw=$1 mod=$2 ep=$3 method=$4 tag=$5; uvicorn $mod:app --host 127.0.0.1 --port 8764 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$fw.log 2>&1 & local p=$!; for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8764/text >/dev/null 2>&1 && break; sleep .05; done; if [ "$method" = POST ]; then oha -n 1000 -c 50 -m POST -H 'content-type: application/json' -d '{"hello":"world","n":123}' --no-tui --output-format quiet http://127.0.0.1:8764$ep >/dev/null; oha -n 10000 -c 50 -m POST -H 'content-type: application/json' -d '{"hello":"world","n":123}' --no-tui --output-format json http://127.0.0.1:8764$ep > r/$fw-$tag.json; else oha -n 1000 -c 50 --no-tui --output-format quiet http://127.0.0.1:8764$ep >/dev/null; oha -n 10000 -c 50 --no-tui --output-format json http://127.0.0.1:8764$ep > r/$fw-$tag.json; fi; kill -9 $p 2>/dev/null || true; wait $p 2>/dev/null || true; sleep .05; }
+          bench(){ local fw=$1 mod=$2 ep=$3 method=$4 tag=$5; uvicorn $mod:app --host 127.0.0.1 --port 8764 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$fw.log 2>&1 & local p=$!; local ready=0; for i in $(seq 1 80); do if curl -fsS http://127.0.0.1:8764/text >/dev/null 2>&1; then ready=1; break; fi; sleep .05; done; if [ "$ready" != 1 ]; then echo "$fw failed to start"; cat /tmp/$fw.log; kill -9 $p 2>/dev/null || true; return 1; fi; if [ "$method" = POST ]; then oha -n 1000 -c 50 -m POST -H 'content-type: application/json' -d '{"hello":"world","n":123}' --no-tui --output-format quiet http://127.0.0.1:8764$ep >/dev/null; oha -n 10000 -c 50 -m POST -H 'content-type: application/json' -d '{"hello":"world","n":123}' --no-tui --output-format json http://127.0.0.1:8764$ep > r/$fw-$tag.json; else oha -n 1000 -c 50 --no-tui --output-format quiet http://127.0.0.1:8764$ep >/dev/null; oha -n 10000 -c 50 --no-tui --output-format json http://127.0.0.1:8764$ep > r/$fw-$tag.json; fi; kill -9 $p 2>/dev/null || true; wait $p 2>/dev/null || true; sleep .05; }
           for case in 'text /text GET' 'json /json GET' 'dynamic /users/42 GET' 'post /echo POST'; do set -- $case; label=$1; ep=$2; method=$3; for n in 1 2 3 4 5 6; do if ((n%2)); then bench night bench_night $ep $method ${label}-$n; bench blacksheep bench_bs $ep $method ${label}-$n; else bench blacksheep bench_bs $ep $method ${label}-$n; bench night bench_night $ep $method ${label}-$n; fi; done; done
           python - <<'PY'
           import json,statistics
