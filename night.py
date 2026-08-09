@@ -2939,8 +2939,6 @@ class Night(Router):
             raise MethodNotAllowed(allowed)
         raise NotFound()
     def _coerce_response(self, value: t.Any) -> Response:
-        if isinstance(value, FileHandler):
-            return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
             return JSONResponse(value, dumps=self._json_dumps)
@@ -2950,6 +2948,8 @@ class Night(Router):
             return Response(value)
         if value is None:
             return Response(b"", status=204)
+        if isinstance(value, FileHandler):
+            return value.response(request())
         if isinstance(value, Response):
             return value
         if kind is bytearray:
