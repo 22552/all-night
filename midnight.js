@@ -1,7 +1,22 @@
 (() => {
+  function getTabId() {
+    const key = "midnight:tab-id";
+    try {
+      let value = sessionStorage.getItem(key);
+      if (!value) {
+        value = globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        sessionStorage.setItem(key, value);
+      }
+      return value;
+    } catch {
+      return globalThis.crypto?.randomUUID?.() || `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+  }
+
   const state = {
     socket: null,
     url: null,
+    tabId: getTabId(),
     reconnect: true,
     reconnectDelayMs: 500,
     reconnectMaxDelayMs: 5000,
@@ -201,8 +216,8 @@
     const eventId = state.nextEventId++;
     if (sourceEvent) state.pendingEvents.set(eventId, sourceEvent);
     state.serverEvents += 1;
-    sendRaw({ type: "midnight-event", event_id: eventId, event: payload });
-    runtimeEvent("server-event", { event_id: eventId, payload });
+    sendRaw({ type: "midnight-event", event_id: eventId, tab_id: state.tabId, event: payload });
+    runtimeEvent("server-event", { event_id: eventId, tab_id: state.tabId, payload });
     return eventId;
   }
 
@@ -353,12 +368,12 @@
 
     const socket = new WebSocket(state.url);
     state.socket = socket;
-    runtimeEvent("transport", { state: "connecting", url: state.url });
+    runtimeEvent("transport", { state: "connecting", url: state.url, tab_id: state.tabId });
 
     socket.addEventListener("open", () => {
       if (state.socket !== socket) return;
       state.reconnectAttempt = 0;
-      runtimeEvent("transport", { state: "open", url: state.url });
+      runtimeEvent("transport", { state: "open", url: state.url, tab_id: state.tabId });
       const queued = state.outbox.splice(0);
       for (const item of queued) socket.send(item);
     });
@@ -387,11 +402,11 @@
     socket.addEventListener("close", event => {
       if (state.socket !== socket) return;
       state.socket = null;
-      runtimeEvent("transport", { state: "closed", code: event.code, reason: event.reason });
+      runtimeEvent("transport", { state: "closed", code: event.code, reason: event.reason, tab_id: state.tabId });
       scheduleReconnect();
     });
 
-    socket.addEventListener("error", () => runtimeEvent("transport", { state: "error" }));
+    socket.addEventListener("error", () => runtimeEvent("transport", { state: "error", tab_id: state.tabId }));
     return socket;
   }
 
@@ -406,6 +421,7 @@
   window.midnight = Object.freeze({
     connectTransport,
     disconnectTransport,
+    tabId: state.tabId,
     emit(name, detail = null) {
       sendEvent({ type: `custom:${name}`, selector: null, detail });
     },
@@ -417,6 +433,7 @@
     stats() {
       return {
         connected: Boolean(state.socket && state.socket.readyState === WebSocket.OPEN),
+        tabId: state.tabId,
         serverEvents: state.serverEvents,
         localCompiledEvents: state.localCompiledEvents,
         compiledPrograms: [...state.compiled.values()].reduce((count, bucket) => count + bucket.size, 0),
@@ -425,5 +442,5 @@
     },
   });
 
-  runtimeEvent("ready", null);
+  runtimeEvent("ready", { tab_id: state.tabId });
 })();
