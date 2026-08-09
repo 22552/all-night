@@ -1,7 +1,6 @@
 import asyncio
 
-from night_midnight_compile import CompiledMidnight
-from night_midnight_hybrid import js
+from night_midnight import CompiledMidnight, js
 from night_midnight_ws import MIDNIGHT_WS_RUNTIME, MidnightWebSocketAdapter
 
 
