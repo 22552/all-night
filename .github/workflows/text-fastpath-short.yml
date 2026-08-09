@@ -1,0 +1,60 @@
+name: Text fast path short
+on:
+  push:
+    branches: [perf/text-response]
+    paths: [.github/workflows/text-fastpath-short.yml]
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: |
+          python -m pip install -q 'uvicorn[standard]'
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha && chmod +x /usr/local/bin/oha
+      - name: Build candidate and microbench
+        run: |
+          cp night.py night_baseline.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py'); s=p.read_text()
+          old='''class PlainTextResponse(Response):\n    def __init__(self, text: str, status: int = 200, headers: t.Mapping[str, str] | None = None):\n        if headers:\n            h = dict(headers)\n            h.setdefault("content-type", "text/plain; charset=utf-8")\n            super().__init__(body=text, status=status, headers=h)\n        else:\n            super().__init__(body=text, status=status, content_type="text/plain; charset=utf-8")\n'''
+          new='''class PlainTextResponse(Response):\n    __slots__ = ()\n\n    def __init__(self, text: str, status: int = 200, headers: t.Mapping[str, str] | None = None):\n        self.status = int(status)\n        self.body = text.encode("utf-8")\n        if headers:\n            h = {k.lower(): v for k, v in headers.items()}\n            h.setdefault("content-type", "text/plain; charset=utf-8")\n            h.setdefault("date", _cached_http_date())\n            h.setdefault("content-length", str(len(self.body)))\n            self.headers = h\n        else:\n            self.headers = {"content-type": "text/plain; charset=utf-8", "date": _cached_http_date(), "content-length": str(len(self.body))}\n        self.raw_headers = []\n'''
+          if old not in s: raise SystemExit('target missing')
+          p.write_text(s.replace(old,new))
+          PY
+          python - <<'PY'
+          import timeit, statistics
+          from night_baseline import PlainTextResponse as B
+          from night import PlainTextResponse as F
+          for cls,name in [(B,'base'),(F,'fast')]:
+              vals=timeit.repeat(lambda: cls('hello world'), number=200000, repeat=7)
+              med=statistics.median(vals)
+              print(name, 'ns/construct', med/200000*1e9, vals)
+          PY
+      - name: Short HTTP benchmark
+        run: |
+          cat > base_app.py <<'PY'
+          from night_baseline import Night
+          app=Night().fast()
+          @app.get('/')
+          def root(): return 'hello world'
+          PY
+          cat > fast_app.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/')
+          def root(): return 'hello world'
+          PY
+          set -euo pipefail; mkdir -p r
+          bench(){ n=$1 m=$2 i=$3; uvicorn $m:app --host 127.0.0.1 --port 8760 --no-access-log --loop uvloop --http httptools >/tmp/$n 2>&1 & p=$!; for x in $(seq 1 50); do curl -fsS http://127.0.0.1:8760/ >/dev/null 2>&1 && break; sleep .05; done; timeout 8s oha -n 1000 -c 50 --no-tui --output-format quiet http://127.0.0.1:8760/ >/dev/null; timeout 8s oha -n 6000 -c 50 --no-tui --output-format json http://127.0.0.1:8760/ >r/$n-$i.json; kill -9 $p || true; wait $p 2>/dev/null || true; sleep .05; }
+          for i in 1 2 3 4; do if ((i%2)); then bench base base_app $i; bench fast fast_app $i; else bench fast fast_app $i; bench base base_app $i; fi; done
+          python - <<'PY'
+          import json,statistics
+          b=[json.load(open(f'r/base-{i}.json'))['summary']['requestsPerSec'] for i in range(1,5)]
+          f=[json.load(open(f'r/fast-{i}.json'))['summary']['requestsPerSec'] for i in range(1,5)]
+          bm,fm=statistics.median(b),statistics.median(f)
+          print('base',bm,b);print('fast',fm,f);print('delta',(fm/bm-1)*100)
+          PY
