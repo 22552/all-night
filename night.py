@@ -512,7 +512,7 @@ class Request:
     path_params: dict[str, t.Any] = dataclasses.field(default_factory=dict)
     max_body_size: int = MAX_BODY_SIZE
     _headers: dict[str, str] | None = dataclasses.field(default=None, init=False)
-    _header_cache: dict[str, str | None] = dataclasses.field(default_factory=dict, init=False)
+    _header_cache: dict[str, str | None] | None = dataclasses.field(default=None, init=False)
 
     @property
     def method(self) -> str:
@@ -547,8 +547,9 @@ class Request:
         key = name.lower()
         if self._headers is not None:
             return self._headers.get(key, default)
-        if key in self._header_cache:
-            value = self._header_cache[key]
+        cache = self._header_cache
+        if cache is not None and key in cache:
+            value = cache[key]
             return default if value is None else value
 
         target = key.encode("latin-1")
@@ -560,7 +561,10 @@ class Request:
             if raw_name == target or raw_name.lower() == target:
                 value = raw_value.decode("latin-1")
                 break
-        self._header_cache[key] = value
+        if cache is None:
+            cache = {}
+            self._header_cache = cache
+        cache[key] = value
         return default if value is None else value
 
     @property
@@ -2939,8 +2943,6 @@ class Night(Router):
             raise MethodNotAllowed(allowed)
         raise NotFound()
     def _coerce_response(self, value: t.Any) -> Response:
-        if isinstance(value, FileHandler):
-            return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
             return JSONResponse(value, dumps=self._json_dumps)
@@ -2950,6 +2952,8 @@ class Night(Router):
             return Response(value)
         if value is None:
             return Response(b"", status=204)
+        if isinstance(value, FileHandler):
+            return value.response(request())
         if isinstance(value, Response):
             return value
         if kind is bytearray:
