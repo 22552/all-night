@@ -1,0 +1,64 @@
+name: Request header cache fastpath
+
+on:
+  push:
+    branches: [perf/request-lazy-header-cache]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bench:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/request-lazy-header-cache
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Save baseline and patch
+        run: |
+          cp night.py /tmp/night_baseline.py
+          python tools/request_header_cache_fastpath.py
+      - name: Test
+        run: |
+          python -m pip install -U pytest
+          PYTHONPATH=. pytest -q
+      - name: Request A/B
+        run: |
+          python - <<'PY'
+          import importlib.util, statistics, sys, time
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod; spec.loader.exec_module(mod); return mod
+          base=load('night_base_req','/tmp/night_baseline.py')
+          import night as fast
+          scope={'type':'http','method':'GET','path':'/hello','query_string':b'','headers':[]}
+          async def receive(): return {'type':'http.request','body':b'','more_body':False}
+          async def send(msg): pass
+          def bench(mod,n=1_000_000):
+              Req=mod.Request; t=time.perf_counter()
+              for _ in range(n): Req(scope=scope,receive=receive,send=send,app=None)
+              return n/(time.perf_counter()-t)
+          b=[bench(base) for _ in range(5)]; f=[bench(fast) for _ in range(5)]
+          bm,fm=statistics.median(b),statistics.median(f)
+          print(f'construct base={bm:.1f} fast={fm:.1f} change={(fm/bm-1)*100:+.2f}%')
+          # Verify first header lookup caches lazily and subsequent lookup remains correct.
+          s={**scope,'headers':[(b'x-test',b'ok')]}
+          r=fast.Request(scope=s,receive=receive,send=send,app=None)
+          assert r._header_cache is None
+          assert r.header('x-test')=='ok'
+          assert r._header_cache=={'x-test':'ok'}
+          assert r.header('x-test')=='ok'
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add night.py
+          git commit -m 'lazily allocate request header cache'
+          git push origin HEAD:perf/request-lazy-header-cache
