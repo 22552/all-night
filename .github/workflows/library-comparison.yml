@@ -1,0 +1,147 @@
+name: Library comparison
+
+on:
+  push:
+    branches: [bench/library-comparison-2026-08-09]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install frameworks and oha
+        run: |
+          python -m pip install -U uvicorn fastapi starlette blacksheep falcon robyn
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+          python - <<'PY'
+          import importlib.metadata as m
+          for p in ('all-night','uvicorn','fastapi','starlette','blacksheep','falcon','robyn'):
+              try: print(p, m.version(p))
+              except Exception: print(p, 'local checkout' if p == 'all-night' else '?')
+          PY
+
+      - name: Create benchmark apps
+        run: |
+          cat > bench_night.py <<'PY'
+          from night import Night
+          app = Night()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_fastapi.py <<'PY'
+          from fastapi import FastAPI
+          app = FastAPI()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/{user_id}')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_starlette.py <<'PY'
+          from starlette.applications import Starlette
+          from starlette.responses import JSONResponse
+          from starlette.routing import Route
+          async def root(request): return JSONResponse({'message':'hello'})
+          async def user(request): return JSONResponse({'id':int(request.path_params['user_id'])})
+          app = Starlette(routes=[Route('/', root), Route('/users/{user_id:int}', user)])
+          PY
+
+          cat > bench_blacksheep.py <<'PY'
+          from blacksheep import Application
+          app = Application()
+          @app.router.get('/')
+          async def root(): return {'message':'hello'}
+          @app.router.get('/users/:user_id')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_falcon.py <<'PY'
+          import falcon.asgi
+          class Root:
+              async def on_get(self, req, resp): resp.media={'message':'hello'}
+          class User:
+              async def on_get(self, req, resp, user_id): resp.media={'id':int(user_id)}
+          app=falcon.asgi.App()
+          app.add_route('/', Root())
+          app.add_route('/users/{user_id}', User())
+          PY
+
+          cat > bench_robyn.py <<'PY'
+          from robyn import Robyn
+          app=Robyn(__file__)
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/:user_id')
+          async def user(request): return {'id':int(request.path_params['user_id'])}
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8106, workers=1)
+          PY
+
+      - name: Run comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+          uvicorn bench_night:app      --host 127.0.0.1 --port 8101 --workers 1 --no-access-log >bench-results/night.log 2>&1 & P1=$!
+          uvicorn bench_fastapi:app    --host 127.0.0.1 --port 8102 --workers 1 --no-access-log >bench-results/fastapi.log 2>&1 & P2=$!
+          uvicorn bench_starlette:app  --host 127.0.0.1 --port 8103 --workers 1 --no-access-log >bench-results/starlette.log 2>&1 & P3=$!
+          uvicorn bench_blacksheep:app --host 127.0.0.1 --port 8104 --workers 1 --no-access-log >bench-results/blacksheep.log 2>&1 & P4=$!
+          uvicorn bench_falcon:app     --host 127.0.0.1 --port 8105 --workers 1 --no-access-log >bench-results/falcon.log 2>&1 & P5=$!
+          python bench_robyn.py >bench-results/robyn.log 2>&1 & P6=$!
+          trap 'kill -9 "$P1" "$P2" "$P3" "$P4" "$P5" "$P6" 2>/dev/null || true' EXIT
+
+          wait_ready(){ local port=$1; for i in $(seq 1 120); do curl -fsS "http://127.0.0.1:$port/" >/dev/null 2>&1 && return 0; sleep .1; done; echo "port $port failed"; return 1; }
+          for p in 8101 8102 8103 8104 8105 8106; do wait_ready "$p"; done
+
+          names=(night fastapi starlette blacksheep falcon robyn)
+          ports=(8101 8102 8103 8104 8105 8106)
+          for i in ${!names[@]}; do timeout 10s oha -n 300 -c 30 --no-tui --output-format quiet "http://127.0.0.1:${ports[$i]}/" >/dev/null; done
+
+          hit(){ local name=$1 port=$2 endpoint=$3 run=$4; [[ $endpoint == static ]] && path=/ || path=/users/42; timeout 10s oha -n 4000 -c 50 --no-tui --output-format json "http://127.0.0.1:${port}${path}" >"bench-results/${name}-${endpoint}-${run}.json"; }
+
+          # Rotate order each round to reduce time-drift bias.
+          for endpoint in static dynamic; do
+            for run in 1 2 3 4; do
+              start=$(( (run - 1) % 6 ))
+              for offset in 0 1 2 3 4 5; do
+                i=$(( (start + offset) % 6 ))
+                hit "${names[$i]}" "${ports[$i]}" "$endpoint" "$run"
+              done
+            done
+          done
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json, statistics
+          names=('night','fastapi','starlette','blacksheep','falcon','robyn')
+          for endpoint in ('static','dynamic'):
+              rows=[]
+              for name in names:
+                  rps=[]; lat=[]
+                  for run in (1,2,3,4):
+                      d=json.load(open(f'bench-results/{name}-{endpoint}-{run}.json'))['summary']
+                      rps.append(d['requestsPerSec']); lat.append(d['average']*1000)
+                  rows.append((statistics.median(rps),statistics.median(lat),name,rps))
+              rows.sort(reverse=True)
+              print('\n'+endpoint.upper())
+              for r,l,n,runs in rows:
+                  print(f'{n:11s} {r:9.1f} req/s  {l:7.3f} ms  runs=' + ','.join(f'{x:.0f}' for x in runs))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: library-comparison-results
+          path: bench-results/
