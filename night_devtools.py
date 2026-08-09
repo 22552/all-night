@@ -37,10 +37,10 @@ def devtools_blueprint(app: t.Any) -> Blueprint:
 <main><section class="cards" id="summary"></section><h2>Routes</h2><table><thead><tr><th>Methods</th><th>Path</th><th>Name</th><th>Endpoint</th></tr></thead><tbody id="routes"></tbody></table></main>
 <script>
 const escape = value => String(value == null ? "" : value).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-fetch("./api/summary").then(r => r.json()).then(data => {
+const base = location.pathname.replace(/\\/?$/, "/");\nfetch(base + "api/summary").then(r => r.json()).then(data => {
  document.querySelector("#summary").innerHTML = [["HTTP routes",data.routes],["WebSocket routes",data.websockets],["Python",data.python],["Runtime",data.runtime]].map(pair => '<div class="card"><div class="label">'+escape(pair[0])+'</div><div class="value">'+escape(pair[1])+'</div></div>').join("");
 });
-fetch("./api/routes").then(r => r.json()).then(data => {
+fetch(base + "api/routes").then(r => r.json()).then(data => {
  document.querySelector("#routes").innerHTML = data.routes.map(route => '<tr><td class="method">'+escape(route.methods.join(", "))+'</td><td><code>'+escape(route.path)+'</code></td><td>'+escape(route.name || "")+'</td><td>'+escape(route.endpoint || "")+'</td></tr>').join("");
 }).catch(error => { document.querySelector("#routes").innerHTML = '<tr><td colspan="4" class="error">'+escape(error)+'</td></tr>'; });
 </script></body></html>""")
@@ -69,5 +69,11 @@ def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__") -> Blueprint:
         raise RuntimeError("Night DevTools is already enabled for this application.")
     tools = devtools_blueprint(app)
     app.register_blueprint(tools, url_prefix=url_prefix)
+
+    # Blueprint mounting deliberately gives the dashboard its normal trailing
+    # slash route. Add a tiny alias so the documented /__night__ URL works too.
+    root_path = "/" + url_prefix.strip("/")
+    app.get(root_path, name="night_devtools.root")(tools.routes[0].endpoint)
+
     app._night_devtools_enabled = True
     return tools
