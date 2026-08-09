@@ -65,7 +65,7 @@ def index():
 @app.get("/health")
 def health():
     return {"ok": True}
-""",
+''',
     "site": """from night import Night, html
 
 app = Night().fast()
@@ -76,7 +76,7 @@ def index():
 <html lang="en"><head><meta charset="utf-8"><title>Night</title></head>
 <body><main><h1>Good evening.</h1><p>Your Night project is ready.</p></main></body>
 </html>""")
-""",
+''',
     "midnight": """from night import Night, html
 
 app = Night().fast()
@@ -87,7 +87,7 @@ def index():
 <html lang="en"><head><meta charset="utf-8"><title>Midnight + Night</title></head>
 <body><main><h1>Midnight project</h1><p>Install and configure all-night-midnight when adding live DOM behavior.</p></main></body>
 </html>""")
-""",
+''',
     "cloudflare": """from night import Night
 from workers import WorkerEntrypoint
 
@@ -100,7 +100,7 @@ def index():
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         return await app.cloudflare_fetch(request)
-""",
+''',
 }
 
 
