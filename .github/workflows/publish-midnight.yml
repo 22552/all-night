@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "midnight-v*"
+    branches:
+      - "release/midnight-v0.1.8"
   workflow_dispatch:
 
 permissions:
