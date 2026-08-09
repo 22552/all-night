@@ -1,0 +1,74 @@
+name: Text response benchmark
+on:
+  push:
+    branches: [perf/text-response]
+    paths: [.github/workflows/text-benchmark.yml]
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install
+        run: |
+          python -m pip install -U 'uvicorn[standard]' fastapi robyn
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+      - name: Inspect text path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('night.py').read_text()
+          for needle in ['class Response', 'HTMLResponse', '_coerce_response', 'isinstance(value, str)', 'text/plain']:
+              print('\n###', needle)
+              pos=s.find(needle)
+              if pos<0:
+                  print('not found'); continue
+              start=max(0,s.rfind('\n',0,pos-1200)); end=min(len(s),s.find('\n\nclass ',pos+1) if s.find('\n\nclass ',pos+1)>0 else pos+3000)
+              print(s[start:end][:5000])
+          PY
+      - name: Apps
+        run: |
+          cat > bench_night.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/')
+          def root(): return 'hello world'
+          PY
+          cat > bench_fastapi.py <<'PY'
+          from fastapi import FastAPI
+          from fastapi.responses import PlainTextResponse
+          app=FastAPI()
+          @app.get('/', response_class=PlainTextResponse)
+          def root(): return 'hello world'
+          PY
+          cat > bench_robyn.py <<'PY'
+          from robyn import Robyn
+          app=Robyn(__file__)
+          @app.get('/')
+          async def root(): return 'hello world'
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8740)
+          PY
+      - name: Benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          bench_uv(){ name=$1 mod=$2 run=$3; uvicorn $mod:app --host 127.0.0.1 --port 8740 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$name.log 2>&1 & pid=$!; for i in $(seq 1 100); do curl -fsS http://127.0.0.1:8740/ >/dev/null 2>&1 && break; sleep .1; done; oha -n 1000 -c 50 --no-tui --output-format quiet http://127.0.0.1:8740/ >/dev/null; oha -n 12000 -c 50 --no-tui --output-format json http://127.0.0.1:8740/ > results/$name-$run.json; kill -9 $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; sleep .1; }
+          bench_robyn(){ name=robyn; run=$1; python bench_robyn.py >/tmp/robyn.log 2>&1 & pid=$!; for i in $(seq 1 100); do curl -fsS http://127.0.0.1:8740/ >/dev/null 2>&1 && break; sleep .1; done; oha -n 1000 -c 50 --no-tui --output-format quiet http://127.0.0.1:8740/ >/dev/null; oha -n 12000 -c 50 --no-tui --output-format json http://127.0.0.1:8740/ > results/$name-$run.json; kill -9 $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; sleep .1; }
+          for r in 1 2 3 4 5; do
+            case $((r%3)) in
+              1) bench_uv night bench_night $r; bench_uv fastapi bench_fastapi $r; bench_robyn $r;;
+              2) bench_uv fastapi bench_fastapi $r; bench_robyn $r; bench_uv night bench_night $r;;
+              0) bench_robyn $r; bench_uv night bench_night $r; bench_uv fastapi bench_fastapi $r;;
+            esac
+          done
+          python - <<'PY'
+          import json,statistics
+          for name in ['night','fastapi','robyn']:
+              vals=[json.load(open(f'results/{name}-{r}.json'))['summary']['requestsPerSec'] for r in range(1,6)]
+              lats=[json.load(open(f'results/{name}-{r}.json'))['summary']['average'] for r in range(1,6)]
+              print(name,'req/s median',statistics.median(vals),vals)
+              print(name,'avg latency median',statistics.median(lats),lats)
+          PY
