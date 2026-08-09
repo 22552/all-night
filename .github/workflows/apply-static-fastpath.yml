@@ -1,0 +1,41 @@
+name: Apply static fastpath
+on:
+  push:
+    branches: [perf/static-noarg-fastpath]
+    paths: [.github/workflows/apply-static-fastpath.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Apply patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py'); s=p.read_text()
+          old='''        if kind == ROUTE_CALL_NOARGS:\n            if plan.is_coro:\n                async def invoke(req, params, _fn=fn, _coerce=coerce):\n                    return _coerce(await _fn())\n            else:\n                def invoke(req, params, _fn=fn, _coerce=coerce):\n                    return _coerce(_fn())\n            return invoke'''
+          new='''        if kind == ROUTE_CALL_NOARGS:\n            if plan.is_coro:\n                async def invoke_noargs(_fn=fn, _coerce=coerce):\n                    return _coerce(await _fn())\n                async def invoke(req, params, _invoke=invoke_noargs):\n                    return await _invoke()\n            else:\n                def invoke_noargs(_fn=fn, _coerce=coerce):\n                    return _coerce(_fn())\n                def invoke(req, params, _invoke=invoke_noargs):\n                    return _invoke()\n            route._night_invoke_noargs = invoke_noargs\n            return invoke'''
+          assert old in s; s=s.replace(old,new,1)
+          old='''            route = method_routes.get(key)\n            if route is not None and route._night_call_kind == ROUTE_CALL_NOARGS:\n                return route, None'''
+          new='''            route = method_routes.get(key)\n            if route is not None and route._night_call_kind == ROUTE_CALL_NOARGS:\n                return route'''
+          assert old in s; s=s.replace(old,new,1)
+          old='''        if direct is not None:\n            route, value = direct\n            if route._night_call_kind == ROUTE_CALL_DIRECT_PARAM:\n                name = route._night_direct_param\n                req.path_params[name] = value\n                invoke = route._night_invoke_scalar\n                if route._night_invoke_async:\n                    resp = await invoke(value)\n                else:\n                    resp = invoke(value)\n            else:\n                invoke = route._night_invoke\n                if route._night_invoke_async:\n                    resp = await invoke(req, req.path_params)\n                else:\n                    resp = invoke(req, req.path_params)'''
+          new='''        if direct is not None:\n            if type(direct) is Route:\n                route = direct\n                invoke = route._night_invoke_noargs\n                if route._night_invoke_async:\n                    resp = await invoke()\n                else:\n                    resp = invoke()\n            else:\n                route, value = direct\n                name = route._night_direct_param\n                req.path_params[name] = value\n                invoke = route._night_invoke_scalar\n                if route._night_invoke_async:\n                    resp = await invoke(value)\n                else:\n                    resp = invoke(value)'''
+          assert old in s; s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Test
+        run: |
+          python -m pip install -U pytest
+          python -m pytest -q
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py
+          git commit -m 'optimize static no-arg dispatch'
+          git push
