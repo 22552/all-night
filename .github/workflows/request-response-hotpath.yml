@@ -51,28 +51,36 @@ jobs:
           @app.get('/users/<int:user_id>')
           async def user(user_id:int): return {'id':user_id}
           PY
-      - name: Run same-runner HTTP A/B
+      - name: Run interleaved same-runner HTTP A/B
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bench-results
           wait_ready() { local u="$1"; for i in $(seq 1 100); do curl -fsS "$u" >/dev/null 2>&1 && return 0; sleep 0.1; done; return 1; }
-          bench() {
-            local name="$1" module="$2" port="$3"
-            uvicorn "$module:app" --host 127.0.0.1 --port "$port" --workers 1 --no-access-log >"bench-results/${name}-server.log" 2>&1 &
-            local pid=$!
-            wait_ready "http://127.0.0.1:${port}/"
-            timeout 10s oha -n 200 -c 25 --no-tui --output-format quiet "http://127.0.0.1:${port}/" >/dev/null
-            for endpoint in static dynamic; do
-              [[ "$endpoint" == static ]] && path='/' || path='/users/42'
-              for run in 1 2 3; do
-                timeout 10s oha -n 2000 -c 50 --no-tui --output-format json "http://127.0.0.1:${port}${path}" >"bench-results/${name}-${endpoint}-${run}.json"
-              done
-            done
-            kill -9 "$pid" 2>/dev/null || true
+          uvicorn bench_baseline_night:app --host 127.0.0.1 --port 8001 --workers 1 --no-access-log >bench-results/baseline-server.log 2>&1 &
+          BPID=$!
+          uvicorn bench_fast_night:app --host 127.0.0.1 --port 8002 --workers 1 --no-access-log >bench-results/fast-server.log 2>&1 &
+          FPID=$!
+          trap 'kill -9 "$BPID" "$FPID" 2>/dev/null || true' EXIT
+          wait_ready http://127.0.0.1:8001/
+          wait_ready http://127.0.0.1:8002/
+          timeout 10s oha -n 200 -c 25 --no-tui --output-format quiet http://127.0.0.1:8001/ >/dev/null
+          timeout 10s oha -n 200 -c 25 --no-tui --output-format quiet http://127.0.0.1:8002/ >/dev/null
+          hit() {
+            local name="$1" port="$2" endpoint="$3" run="$4"
+            [[ "$endpoint" == static ]] && path='/' || path='/users/42'
+            timeout 10s oha -n 2000 -c 50 --no-tui --output-format json "http://127.0.0.1:${port}${path}" >"bench-results/${name}-${endpoint}-${run}.json"
           }
-          bench baseline bench_baseline_night 8001
-          bench fast bench_fast_night 8002
+          for endpoint in static dynamic; do
+            hit baseline 8001 "$endpoint" 1
+            hit fast     8002 "$endpoint" 1
+            hit fast     8002 "$endpoint" 2
+            hit baseline 8001 "$endpoint" 2
+            hit baseline 8001 "$endpoint" 3
+            hit fast     8002 "$endpoint" 3
+            hit fast     8002 "$endpoint" 4
+            hit baseline 8001 "$endpoint" 4
+          done
       - name: Summarize
         run: |
           python - <<'PY'
@@ -81,17 +89,20 @@ jobs:
               vals={}
               for name in ('baseline','fast'):
                   rs=[]; ls=[]
-                  for run in (1,2,3):
+                  for run in (1,2,3,4):
                       d=json.load(open(f'bench-results/{name}-{endpoint}-{run}.json'))['summary']
                       rs.append(d['requestsPerSec']); ls.append(d['average']*1000)
-                  vals[name]=(statistics.median(rs),statistics.median(ls))
+                  vals[name]=(statistics.median(rs),statistics.median(ls),rs)
               b,f=vals['baseline'],vals['fast']
               print(f"{endpoint}: baseline={b[0]:.1f} req/s fast={f[0]:.1f} req/s change={(f[0]/b[0]-1)*100:+.2f}% | latency {b[1]:.3f}->{f[1]:.3f} ms")
+              print('  baseline runs:', ', '.join(f'{v:.1f}' for v in b[2]))
+              print('  fast runs:    ', ', '.join(f'{v:.1f}' for v in f[2]))
           PY
       - name: Commit patch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add night.py
+          if git diff --cached --quiet; then exit 0; fi
           git commit -m 'optimize request and response hot paths'
           git push origin HEAD:perf/request-response-hotpath
