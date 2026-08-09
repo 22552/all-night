@@ -29,6 +29,6 @@ def test_pages_builds_root_index_and_keeps_404_fallback():
     assert (BROWSER / "404.html").exists()
 
 
-def test_release_version_is_0_1_4():
+def test_release_version_is_0_1_5():
     pyproject = (ROOT / "pyproject.toml").read_text()
-    assert 'version = "0.1.4"' in pyproject
+    assert 'version = "0.1.5"' in pyproject
