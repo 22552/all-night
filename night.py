@@ -656,19 +656,31 @@ class Request:
     async def body(self) -> bytes:
         if self._body is not None:
             return self._body
-        body = bytearray()
         content_length = self.header("content-length")
         if content_length and content_length.isdigit() and int(content_length) > self.max_body_size:
             raise HTTPError(413, "Request body too large")
-        more = True
-        while more:
+
+        while True:
+            event = await self.receive()
+            if event["type"] == "http.request":
+                break
+        first = event.get("body", b"")
+        if len(first) > self.max_body_size:
+            raise HTTPError(413, "Request body too large")
+        if not event.get("more_body", False):
+            self._body = first if type(first) is bytes else bytes(first)
+            return self._body
+
+        body = bytearray(first)
+        while True:
             event = await self.receive()
             if event["type"] != "http.request":
                 continue
             body += event.get("body", b"")
             if len(body) > self.max_body_size:
                 raise HTTPError(413, "Request body too large")
-            more = event.get("more_body", False)
+            if not event.get("more_body", False):
+                break
         self._body = bytes(body)
         return self._body
 
