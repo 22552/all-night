@@ -23,7 +23,6 @@ classifiers = [
 standard = [
   "uvicorn[standard]>=0.30",
   "orjson>=3.10",
-  "all-night-midnight==0.1.5",
   "workers-runtime-sdk; python_version >= '3.13'",
 ]
 
