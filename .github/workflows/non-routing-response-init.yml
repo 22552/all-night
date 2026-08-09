@@ -1,0 +1,68 @@
+name: Non-routing response init experiment
+on:
+  push:
+    branches: [perf/non-routing-hotpath]
+    paths: [.github/workflows/non-routing-response-init.yml]
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Install
+        run: |
+          python -m pip install -U 'uvicorn[standard]' orjson pytest
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+      - name: Build variants
+        run: |
+          cp night.py night_baseline.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py'); s=p.read_text()
+          old='''        self.status = int(status)\n        self.body = _to_bytes(body)\n        self.headers = {k.lower(): v for k, v in headers.items()} if headers else {}\n        self.raw_headers = list(raw_headers) if raw_headers else []\n        if content_type is not None:\n            self.headers[\"content-type\"] = content_type\n        if \"date\" not in self.headers:\n            self.headers[\"date\"] = _cached_http_date()\n        if \"content-length\" not in self.headers:\n            self.headers[\"content-length\"] = str(len(self.body))'''
+          new='''        self.status = int(status)\n        self.body = body if type(body) is bytes else _to_bytes(body)\n        self.raw_headers = list(raw_headers) if raw_headers else []\n        if not headers:\n            length = str(len(self.body))\n            date = _cached_http_date()\n            if content_type is None:\n                self.headers = {\"date\": date, \"content-length\": length}\n            else:\n                self.headers = {\"content-type\": content_type, \"date\": date, \"content-length\": length}\n            return\n        self.headers = {k.lower(): v for k, v in headers.items()}\n        if content_type is not None:\n            self.headers[\"content-type\"] = content_type\n        if \"date\" not in self.headers:\n            self.headers[\"date\"] = _cached_http_date()\n        if \"content-length\" not in self.headers:\n            self.headers[\"content-length\"] = str(len(self.body))'''
+          assert old in s; p.write_text(s.replace(old,new,1))
+          PY
+          cat > bench_base.py <<'PY'
+          import importlib.util,sys
+          spec=importlib.util.spec_from_file_location('night_base_mod','night_baseline.py'); m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; spec.loader.exec_module(m)
+          app=m.Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          PY
+          cat > bench_fast.py <<'PY'
+          from night import Night
+          app=Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          PY
+      - name: Tests
+        run: python -m pytest -q
+      - name: Response microbench
+        run: |
+          python - <<'PY'
+          import importlib.util,sys,time,orjson
+          spec=importlib.util.spec_from_file_location('b','night_baseline.py'); b=importlib.util.module_from_spec(spec); sys.modules['b']=b; spec.loader.exec_module(b)
+          import night as f
+          N=500000
+          for mod in (b,f):
+            t=time.perf_counter()
+            for _ in range(N): mod.JSONResponse({'message':'hello'}, dumps=orjson.dumps)
+            print(mod.__name__, N/(time.perf_counter()-t))
+          PY
+      - name: HTTP benchmark
+        run: |
+          set -euo pipefail; mkdir -p bench-results
+          bench(){ local n=$1 m=$2 r=$3; uvicorn $m:app --host 127.0.0.1 --port 8720 --workers 1 --no-access-log --loop uvloop --http httptools >/tmp/$n.log 2>&1 & pid=$!; for i in $(seq 1 100); do curl -fsS http://127.0.0.1:8720/ >/dev/null 2>&1 && break; sleep .1; done; oha -n 500 -c 30 --no-tui --output-format quiet http://127.0.0.1:8720/ >/dev/null; oha -n 10000 -c 50 --no-tui --output-format json http://127.0.0.1:8720/ > bench-results/$n-$r.json; kill -9 $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; sleep .1; }
+          for r in 1 2 3 4 5 6; do if ((r%2)); then bench base bench_base $r; bench fast bench_fast $r; else bench fast bench_fast $r; bench base bench_base $r; fi; done
+          python - <<'PY'
+          import json,statistics
+          b=[json.load(open(f'bench-results/base-{r}.json'))['summary']['requestsPerSec'] for r in range(1,7)]
+          f=[json.load(open(f'bench-results/fast-{r}.json'))['summary']['requestsPerSec'] for r in range(1,7)]
+          bm,fm=statistics.median(b),statistics.median(f)
+          print('base',bm,b); print('fast',fm,f); print('delta', (fm/bm-1)*100)
+          PY
