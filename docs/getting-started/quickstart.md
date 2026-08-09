@@ -1,6 +1,30 @@
 # Quickstart
 
-Night **0.1.4** requires Python **3.11+**. The PyPI package is `all-night`; applications import `night`.
+### Install profiles (0.1.5)
+
+Minimal Night stays dependency-free:
+
+```bash
+python -m pip install -U all-night
+```
+
+For the recommended CPython server stack, Midnight, and Cloudflare runtime typings:
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+The standard profile installs `uvicorn[standard]`, `orjson`, `workers-runtime-sdk` on Python 3.13+, and the separate `all-night-midnight` distribution. Midnight is no longer included in the minimal wheel.
+
+To enable the optional CPython fast path:
+
+```python
+app = Night().fast()
+```
+
+`app.fast()` uses `orjson` for dict/list responses. With `night run`, Night also selects `uvloop`, `httptools`, and `websockets` when installed. External ASGI servers still control their own backend selection.
+
+Night **0.1.5** requires Python **3.11+**. The PyPI package is `all-night`; applications import `night`.
 
 ## Install
 
@@ -52,7 +76,7 @@ uvicorn app:app --reload
 
 Night itself does not require Uvicorn for normal CPython use; Uvicorn is only needed when you choose it as the server or use the current `night run` implementation.
 
-> **CLI note:** In 0.1.4, `night routes` and `night shell` do not take an application path argument. The older examples `night routes app.py` and `night shell app.py` were incorrect and have been removed from this quickstart. See [Tooling and CLI](../reference/tooling.md) for the current behavior and limitations.
+> **CLI note:** In 0.1.5, `night routes` and `night shell` do not take an application path argument. The older examples `night routes app.py` and `night shell app.py` were incorrect and have been removed from this quickstart. See [Tooling and CLI](../reference/tooling.md) for the current behavior and limitations.
 
 ## Add routes
 

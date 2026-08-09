@@ -84,3 +84,7 @@ return await app.cloudflare_fetch(request)
 ```
 
 `cloudflare_fetch()` accepts the Workers Request wrapper, builds Night's HTTP request scope, invokes the normal application core, and returns a Workers Response. Cloudflare-specific imports remain optional for normal CPython deployments.
+
+## Fast mode
+
+`Night.fast()` enables the optional standard-profile CPython fast path and returns the same application instance, so `app = Night().fast()` is supported. It requires `all-night[standard]`; otherwise it raises a clear runtime error. Dict/list responses use `orjson`, and `night run` selects installed Uvicorn fast backends (`uvloop`, `httptools`, `websockets`).

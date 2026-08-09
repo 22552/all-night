@@ -12,4 +12,6 @@ assert response.status_code == 200
 
 `app.register_extension()` は `init_app(app, **config)` を持つ拡張、またはアプリ用callableを登録します。JSON-RPCは `@app.rpc("method")` で登録し、`/rpc` に公開されます。
 
+### Fast mode時のサーバー選択
 
+読み込んだアプリで `app.fast()` が有効な場合、`night run` は `all-night[standard]` によって利用可能な `uvloop`、`httptools`、`websockets` をUvicornへ指定します。fast modeでなければ従来のUvicornデフォルトを維持します。

@@ -1,6 +1,30 @@
 # クイックスタート
 
-Night **0.1.4** は Python **3.11+** を対象にしています。PyPI のパッケージ名は `all-night`、import 名は `night` です。
+### インストール構成（0.1.5）
+
+依存なしの最小構成:
+
+```bash
+python -m pip install -U all-night
+```
+
+CPython向けの推奨構成（高速サーバースタック、Midnight、Cloudflareの型/ランタイム補助を含む）:
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+`standard` は `uvicorn[standard]`、`orjson`、Python 3.13+ では `workers-runtime-sdk`、さらに別配布の `all-night-midnight` を導入します。0.1.5からMidnightは最小wheelには同梱されません。
+
+高速化を有効にするには:
+
+```python
+app = Night().fast()
+```
+
+`app.fast()` はdict/listレスポンスに `orjson` を使い、`night run` では利用可能なら `uvloop`、`httptools`、`websockets` も選択します。外部ASGIサーバーを直接使う場合、event loop/backendの選択権はそのサーバー側にあります。
+
+Night **0.1.5** は Python **3.11+** を対象にしています。PyPI のパッケージ名は `all-night`、import 名は `night` です。
 
 ## インストール
 
@@ -52,7 +76,7 @@ uvicorn app:app --reload
 
 通常の Night コア自体は Uvicorn を必須依存にしていません。現在の `night run` 実装または Uvicorn をサーバーとして選ぶ場合だけ必要です。
 
-> **CLIについて:** 0.1.4 の `night routes` と `night shell` はアプリファイル引数を受け取りません。以前の `night routes app.py` / `night shell app.py` という例は現行実装と一致しないため削除しました。
+> **CLIについて:** 0.1.5 の `night routes` と `night shell` はアプリファイル引数を受け取りません。以前の `night routes app.py` / `night shell app.py` という例は現行実装と一致しないため削除しました。
 
 ## ルートを追加する
 

@@ -1,0 +1,32 @@
+name: Create release tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".release/version"
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate and tag release
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < .release/version)"
+          test -n "$VERSION"
+          grep -q "version = \"$VERSION\"" pyproject.toml
+          if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already exists"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "v$VERSION" -m "all-night $VERSION"
+          git push origin "v$VERSION"

@@ -31,6 +31,7 @@ import gzip
 import hashlib
 import hmac
 import inspect
+import importlib.util
 import json
 import mimetypes
 import os
@@ -932,8 +933,8 @@ class Response:
     ):
         self.status = int(status)
         self.body = _to_bytes(body)
-        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
-        self.raw_headers = list(raw_headers or ())
+        self.headers = {k.lower(): v for k, v in headers.items()} if headers else {}
+        self.raw_headers = list(raw_headers) if raw_headers else []
         if content_type is not None:
             self.headers["content-type"] = content_type
         if "date" not in self.headers:
@@ -942,8 +943,17 @@ class Response:
             self.headers["content-length"] = str(len(self.body))
 
     def asgi_headers(self) -> list[tuple[bytes, bytes]]:
-        normal = [(k, v) for k, v in self.headers.items() if k != "set-cookie"]
-        return [(k.encode("latin-1"), v.encode("latin-1")) for k, v in normal + self.raw_headers]
+        encoded = [
+            (k.encode("latin-1"), v.encode("latin-1"))
+            for k, v in self.headers.items()
+            if k != "set-cookie"
+        ]
+        if self.raw_headers:
+            encoded.extend(
+                (k.encode("latin-1"), v.encode("latin-1"))
+                for k, v in self.raw_headers
+            )
+        return encoded
 
     def add_header(self, name: str, value: str):
         self.raw_headers.append((name.lower(), value))
@@ -1129,23 +1139,36 @@ class JSONResponse(Response):
             # not accept json.dumps keyword arguments.
             encoded = dumps(data)
         body = encoded if isinstance(encoded, bytes) else str(encoded).encode("utf-8")
-        h = dict(headers or {})
-        h.setdefault("content-type", "application/json; charset=utf-8")
-        super().__init__(body=body, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "application/json; charset=utf-8")
+            super().__init__(body=body, status=status, headers=h)
+        else:
+            super().__init__(
+                body=body,
+                status=status,
+                content_type="application/json; charset=utf-8",
+            )
 
 
 class PlainTextResponse(Response):
     def __init__(self, text: str, status: int = 200, headers: t.Mapping[str, str] | None = None):
-        h = dict(headers or {})
-        h.setdefault("content-type", "text/plain; charset=utf-8")
-        super().__init__(body=text, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "text/plain; charset=utf-8")
+            super().__init__(body=text, status=status, headers=h)
+        else:
+            super().__init__(body=text, status=status, content_type="text/plain; charset=utf-8")
 
 
 class HTMLResponse(Response):
     def __init__(self, html: str, status: int = 200, headers: t.Mapping[str, str] | None = None):
-        h = dict(headers or {})
-        h.setdefault("content-type", "text/html; charset=utf-8")
-        super().__init__(body=html, status=status, headers=h)
+        if headers:
+            h = dict(headers)
+            h.setdefault("content-type", "text/html; charset=utf-8")
+            super().__init__(body=html, status=status, headers=h)
+        else:
+            super().__init__(body=html, status=status, content_type="text/html; charset=utf-8")
 
 
 class TemplateError(ValueError):
@@ -1982,6 +2005,12 @@ class Router:
 
     def __init__(self):
         self.routes: list[Route] = []
+        self._json_dumps: t.Callable[..., t.Any] = json.dumps
+        self._fast_mode = False
+        self._json_dumps: t.Callable[..., t.Any] = json.dumps
+        self._fast_mode = False
+        self._json_dumps: t.Callable[..., t.Any] = json.dumps
+        self._fast_mode = False
 
     def add_route(
         self,
@@ -2186,6 +2215,24 @@ class Night(Router):
         self._rpc_route_installed = False
         self.startup_hooks: list[t.Callable] = []
         self.shutdown_hooks: list[t.Callable] = []
+
+    def fast(self) -> "Night":
+        """Enable Night's optional CPython fast profile.
+
+        Requires ``all-night[standard]``. Dict/list responses use ``orjson``;
+        ``night run`` also selects uvloop/httptools/websockets when available.
+        External ASGI servers keep control of their own event loop/backend.
+        """
+        try:
+            import orjson
+        except ImportError as exc:
+            raise RuntimeError(
+                "Night.fast() requires the standard profile: "
+                "pip install 'all-night[standard]'"
+            ) from exc
+        self._json_dumps = orjson.dumps
+        self._fast_mode = True
+        return self
 
     def gz(self, level: int = 6):
         """Enable gzip by default for send_file() and static() responses."""
@@ -2896,7 +2943,7 @@ class Night(Router):
             return value.response(request())
         kind = type(value)
         if kind is dict or kind is list:
-            return JSONResponse(value)
+            return JSONResponse(value, dumps=self._json_dumps)
         if kind is str:
             return PlainTextResponse(value)
         if kind is bytes:
@@ -3441,7 +3488,15 @@ def cli(argv: list[str] | None = None) -> int:
             code.interact(local={"app": target, **namespace})
             return 0
         import uvicorn
-        uvicorn.run(target, host=args.host, port=args.port)
+        run_options: dict[str, t.Any] = {}
+        if bool(getattr(target, "_fast_mode", False)):
+            if importlib.util.find_spec("uvloop") is not None:
+                run_options["loop"] = "uvloop"
+            if importlib.util.find_spec("httptools") is not None:
+                run_options["http"] = "httptools"
+            if importlib.util.find_spec("websockets") is not None:
+                run_options["ws"] = "websockets"
+        uvicorn.run(target, host=args.host, port=args.port, **run_options)
         return 0
     return 2
 

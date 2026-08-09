@@ -1,5 +1,15 @@
 # Midnight
 
+## Installation in 0.1.5+
+
+Midnight is an optional standard-profile feature and is no longer bundled in the minimal `all-night` wheel.
+
+```bash
+python -m pip install -U "all-night[standard]"
+```
+
+The extra installs the separate `all-night-midnight` distribution, which provides `night_midnight`, `night_midnight_component`, `night_midnight_dev`, and `night_midnight_form`.
+
 Midnight is Browser Night's bidirectional bridge between Python and the rendered HTML page.
 
 It has two transports:

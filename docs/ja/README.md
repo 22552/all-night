@@ -99,7 +99,7 @@ night run app.py
 night run app.py --host 0.0.0.0 --port 8080
 ```
 
-0.1.4 の `night routes` / `night shell` はアプリファイル引数を受け取りません。以前のDocsにあった `night routes app.py` / `night shell app.py` は現行実装と一致しません。
+0.1.5 の `night routes` / `night shell` はアプリファイル引数を受け取りません。以前のDocsにあった `night routes app.py` / `night shell app.py` は現行実装と一致しません。
 
 ## Browser Night と GitHub Pages
 
@@ -117,7 +117,7 @@ portable Web runtime では transport 固有処理を routing core の外へ置�
 
 ## バージョン
 
-現在の PyPI release は **all-night 0.1.4**、必要 Python は **3.11+** です。
+現在の PyPI release は **all-night 0.1.5**、必要 Python は **3.11+** です。
 
 Midnight は `night_midnight`、`night_midnight_component`、`night_midnight_dev`、`night_midnight_form` として `all-night` に同梱されており、別 PyPI package ではありません。
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "all-night"
-version = "0.1.4"
+version = "0.1.5"
 description = "A tiny, single-file Flask-like ASGI web framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,14 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
+[project.optional-dependencies]
+standard = [
+  "uvicorn[standard]>=0.30",
+  "orjson>=3.10",
+  "all-night-midnight==0.1.5",
+  "workers-runtime-sdk; python_version >= '3.13'",
+]
+
 [project.urls]
 Homepage = "https://github.com/22552/all-night"
 Documentation = "https://github.com/22552/all-night/tree/main/docs"
@@ -28,4 +36,4 @@ Repository = "https://github.com/22552/all-night"
 night = "night:cli"
 
 [tool.setuptools]
-py-modules = ["night", "night_mcp", "night_web", "night_request_info", "night_cloudflare", "night_midnight", "night_midnight_component", "night_midnight_dev", "night_midnight_form"]
+py-modules = ["night", "night_mcp", "night_web", "night_request_info", "night_cloudflare"]
