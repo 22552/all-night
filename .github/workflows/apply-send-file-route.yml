@@ -1,0 +1,38 @@
+name: Apply send_file route helper
+on:
+  push:
+    branches: [feat/send-file-route]
+    paths: [.github/workflows/apply-send-file-route.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - name: Patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('night.py'); s=p.read_text()
+          marker='''    def gz(self, level: int = 6):\n        \"\"\"Enable gzip by default for send_file() and static() responses.\"\"\"'''
+          insert='''    def send_file(\n        self,\n        path: str,\n        route: str,\n        *,\n        status: int = 200,\n        headers: t.Mapping[str, str] | None = None,\n        download_name: str | None = None,\n        cache_seconds: int | None = 3600,\n        gzip: bool | None = None,\n        name: str | None = None,\n    ):\n        \"\"\"Publish one file at a GET route and return the registered handler.\n\n        ``app.send_file(\"logo.png\", \"logo\")`` publishes ``logo.png`` at\n        ``/logo``. A leading slash in ``route`` is optional. The global\n        :func:`send_file` helper remains the response builder used inside\n        handlers.\n        \"\"\"\n        route_path = \"/\" + str(route).lstrip(\"/\")\n        file_path = os.fspath(path)\n\n        @self.get(route_path, name=name)\n        def _night_published_file():\n            handler = send_file(\n                file_path,\n                status=status,\n                headers=dict(headers) if headers else None,\n                download_name=download_name,\n                cache_seconds=cache_seconds,\n            )\n            if gzip is True:\n                handler.gz()\n            elif gzip is False:\n                handler.raw()\n            return handler\n\n        return _night_published_file\n\n'''
+          assert marker in s
+          s=s.replace(marker,insert+marker,1)
+          p.write_text(s)
+
+          Path('tests/test_send_file_route.py').write_text('''import asyncio\nfrom pathlib import Path\n\nfrom night import Night\n\n\ndef request(app, path):\n    events = []\n    scope = {\"type\": \"http\", \"http_version\": \"1.1\", \"method\": \"GET\", \"scheme\": \"http\", \"path\": path, \"raw_path\": path.encode(), \"query_string\": b\"\", \"headers\": []}\n    async def receive(): return {\"type\": \"http.request\", \"body\": b\"\", \"more_body\": False}\n    async def send(event): events.append(event)\n    asyncio.run(app(scope, receive, send))\n    return events\n\n\ndef test_app_send_file_publishes_route(tmp_path: Path):\n    source = tmp_path / \"test.png\"\n    source.write_bytes(b\"PNGDATA\")\n    app = Night()\n    app.send_file(str(source), \"test\")\n    events = request(app, \"/test\")\n    assert events[0][\"status\"] == 200\n    assert events[-1][\"body\"] == b\"PNGDATA\"\n\n\ndef test_app_send_file_accepts_leading_slash(tmp_path: Path):\n    source = tmp_path / \"x.txt\"\n    source.write_text(\"hello\")\n    app = Night()\n    app.send_file(str(source), \"/hello\")\n    events = request(app, \"/hello\")\n    assert events[-1][\"body\"] == b\"hello\"\n''')
+          PY
+      - name: Test
+        run: |
+          python -m pip install -U pytest
+          python -m pytest -q
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add night.py tests/test_send_file_route.py
+          git commit -m 'add app.send_file route helper'
+          git push
