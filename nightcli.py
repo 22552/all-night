@@ -150,6 +150,18 @@ def load_app(root: Path, target: str) -> Any:
     old_path = list(sys.path)
     old_cwd = Path.cwd()
     try:
+        # A long-lived CLI/test process may already contain another project's
+        # module named "app". Never reuse that module for this project.
+        cached = sys.modules.get(module_name)
+        cached_file = getattr(cached, "__file__", None) if cached is not None else None
+        if cached_file is not None:
+            try:
+                cached_path = Path(cached_file).resolve()
+            except OSError:
+                cached_path = None
+            if cached_path is not None and root not in (cached_path, *cached_path.parents):
+                del sys.modules[module_name]
+        importlib.invalidate_caches()
         os.chdir(root)
         sys.path.insert(0, str(root))
         module = importlib.import_module(module_name)
