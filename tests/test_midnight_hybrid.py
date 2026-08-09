@@ -1,6 +1,6 @@
 import asyncio
 
-from night_midnight_hybrid import HybridMidnight, js
+from night_midnight import HybridMidnight, js
 
 
 def test_plain_python_value_is_set_directly():
