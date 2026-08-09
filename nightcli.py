@@ -4,7 +4,7 @@
 The CLI intentionally stays dependency-free.  It owns project scaffolding and
 project discovery, while the Night runtime remains responsible for serving and
 routing requests.
-"""
+'''
 
 from __future__ import annotations
 
