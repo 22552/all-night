@@ -1,0 +1,175 @@
+name: Solo runtime comparison
+
+on:
+  push:
+    branches: [bench/solo-runtime-comparison-2026-08-09]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install frameworks and tools
+        run: |
+          python -m pip install -U 'uvicorn[standard]' fastapi starlette blacksheep falcon robyn orjson
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+          python - <<'PY'
+          import importlib.metadata as m
+          for p in ('uvicorn','fastapi','starlette','blacksheep','falcon','robyn','orjson','uvloop','httptools'):
+              try: print(p, m.version(p))
+              except Exception as e: print(p, '?', e)
+          PY
+
+      - name: Create benchmark apps
+        run: |
+          cat > bench_night.py <<'PY'
+          from night import Night
+          app = Night()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_night_fast.py <<'PY'
+          from night import Night
+          app = Night().fast()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/<int:user_id>')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_blacksheep.py <<'PY'
+          from blacksheep import Application
+          app = Application()
+          @app.router.get('/')
+          async def root(): return {'message':'hello'}
+          @app.router.get('/users/:user_id')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_fastapi.py <<'PY'
+          from fastapi import FastAPI
+          app = FastAPI()
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/{user_id}')
+          async def user(user_id:int): return {'id':user_id}
+          PY
+
+          cat > bench_starlette.py <<'PY'
+          from starlette.applications import Starlette
+          from starlette.responses import JSONResponse
+          from starlette.routing import Route
+          async def root(request): return JSONResponse({'message':'hello'})
+          async def user(request): return JSONResponse({'id':int(request.path_params['user_id'])})
+          app = Starlette(routes=[Route('/', root), Route('/users/{user_id:int}', user)])
+          PY
+
+          cat > bench_falcon.py <<'PY'
+          import falcon.asgi
+          class Root:
+              async def on_get(self, req, resp): resp.media={'message':'hello'}
+          class User:
+              async def on_get(self, req, resp, user_id): resp.media={'id':int(user_id)}
+          app=falcon.asgi.App()
+          app.add_route('/', Root())
+          app.add_route('/users/{user_id}', User())
+          PY
+
+          cat > bench_robyn.py <<'PY'
+          from robyn import Robyn
+          app=Robyn(__file__)
+          @app.get('/')
+          async def root(): return {'message':'hello'}
+          @app.get('/users/:user_id')
+          async def user(request): return {'id':int(request.path_params['user_id'])}
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8200)
+          PY
+
+      - name: Benchmark solo servers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench-results
+          bench_one(){
+            local name=$1 cmd=$2 port=$3 endpoint=$4 run=$5
+            rm -f /tmp/${name}.log
+            bash -c "$cmd" >/tmp/${name}.log 2>&1 & pid=$!
+            trap 'kill -9 "$pid" 2>/dev/null || true' RETURN
+            for i in $(seq 1 120); do curl -fsS "http://127.0.0.1:$port/" >/dev/null 2>&1 && break; sleep .1; done
+            curl -fsS "http://127.0.0.1:$port/" >/dev/null
+            timeout 10s oha -n 500 -c 30 --no-tui --output-format quiet "http://127.0.0.1:$port/" >/dev/null
+            if [[ $endpoint == static ]]; then path=/; else path=/users/42; fi
+            timeout 10s oha -n 5000 -c 50 --no-tui --output-format json "http://127.0.0.1:$port$path" > "bench-results/${name}-${endpoint}-${run}.json"
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - RETURN
+          }
+
+          # Same-server ASGI comparison: all on Uvicorn + httptools + uvloop.
+          names=(night blacksheep starlette falcon fastapi)
+          mods=(bench_night bench_blacksheep bench_starlette bench_falcon bench_fastapi)
+          for endpoint in static dynamic; do
+            for run in 1 2 3 4; do
+              if (( run % 2 == 1 )); then order=(0 1 2 3 4); else order=(4 3 2 1 0); fi
+              for i in "${order[@]}"; do
+                bench_one "asgi-${names[$i]}" "uvicorn ${mods[$i]}:app --host 127.0.0.1 --port 8200 --workers 1 --no-access-log --loop uvloop --http httptools" 8200 "$endpoint" "$run"
+              done
+            done
+          done
+
+          # Best-effort fast-runtime comparison, still one server at a time.
+          for endpoint in static dynamic; do
+            for run in 1 2 3 4; do
+              if (( run % 2 == 1 )); then order=(nightfast robyn blacksheepfast); else order=(blacksheepfast robyn nightfast); fi
+              for name in "${order[@]}"; do
+                case $name in
+                  nightfast) cmd="uvicorn bench_night_fast:app --host 127.0.0.1 --port 8200 --workers 1 --no-access-log --loop uvloop --http httptools";;
+                  blacksheepfast) cmd="uvicorn bench_blacksheep:app --host 127.0.0.1 --port 8200 --workers 1 --no-access-log --loop uvloop --http httptools";;
+                  robyn) cmd="python bench_robyn.py";;
+                esac
+                bench_one "fast-${name}" "$cmd" 8200 "$endpoint" "$run"
+              done
+            done
+          done
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json, statistics
+          groups={
+            'ASGI SAME SERVER': ['asgi-night','asgi-blacksheep','asgi-starlette','asgi-falcon','asgi-fastapi'],
+            'FAST RUNTIME': ['fast-nightfast','fast-blacksheepfast','fast-robyn'],
+          }
+          for title,names in groups.items():
+              print('\n###',title)
+              for endpoint in ('static','dynamic'):
+                  rows=[]
+                  for name in names:
+                      rps=[]; lat=[]
+                      for run in (1,2,3,4):
+                          d=json.load(open(f'bench-results/{name}-{endpoint}-{run}.json'))['summary']
+                          rps.append(d['requestsPerSec']); lat.append(d['average']*1000)
+                      rows.append((statistics.median(rps), statistics.median(lat), name, rps))
+                  rows.sort(reverse=True)
+                  print('\n'+endpoint.upper())
+                  for r,l,n,runs in rows:
+                      print(f'{n:23s} {r:9.1f} req/s {l:7.3f} ms runs=' + ','.join(f'{x:.0f}' for x in runs))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: solo-runtime-comparison-results
+          path: bench-results/
