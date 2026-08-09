@@ -23,7 +23,7 @@ from typing import Any
 CONFIG_NAME = "night.toml"
 TEMPLATES = ("api", "site", "midnight", "cloudflare")
 
-PROJECT_TOML = """[project]
+PROJECT_TOML = '''[project]
 name = {name!r}
 template = {template!r}
 app = {app!r}
@@ -31,9 +31,9 @@ app = {app!r}
 [server]
 host = "127.0.0.1"
 port = 8000
-"""
+'''
 
-PYPROJECT_TOML = """[project]
+PYPROJECT_TOML = '''[project]
 name = {package!r}
 version = "0.1.0"
 requires-python = ">=3.11"
@@ -41,9 +41,9 @@ dependencies = ["all-night[standard]>=0.1.7"]
 
 [tool.setuptools]
 py-modules = ["app"]
-"""
+'''
 
-CLOUDFLARE_PYPROJECT_TOML = """[project]
+CLOUDFLARE_PYPROJECT_TOML = '''[project]
 name = {package!r}
 version = "0.1.0"
 requires-python = ">=3.13"
@@ -51,10 +51,10 @@ dependencies = ["all-night>=0.1.7", "workers-runtime-sdk"]
 
 [dependency-groups]
 dev = ["workers-py"]
-"""
+'''
 
 TEMPLATES_SOURCE = {
-    "api": """from night import Night
+    "api": '''from night import Night
 
 app = Night().fast()
 
@@ -66,7 +66,7 @@ def index():
 def health():
     return {"ok": True}
 ''',
-    "site": """from night import Night, html
+    "site": '''from night import Night, html
 
 app = Night().fast()
 
@@ -77,7 +77,7 @@ def index():
 <body><main><h1>Good evening.</h1><p>Your Night project is ready.</p></main></body>
 </html>""")
 ''',
-    "midnight": """from night import Night, html
+    "midnight": '''from night import Night, html
 
 app = Night().fast()
 
@@ -88,7 +88,7 @@ def index():
 <body><main><h1>Midnight project</h1><p>Install and configure all-night-midnight when adding live DOM behavior.</p></main></body>
 </html>""")
 ''',
-    "cloudflare": """from night import Night
+    "cloudflare": '''from night import Night
 from workers import WorkerEntrypoint
 
 app = Night()
