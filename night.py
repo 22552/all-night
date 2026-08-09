@@ -387,6 +387,19 @@ class ValidationError(HTTPError):
         super().__init__(422, detail)
 
 
+_VALIDATION_PLAN_CACHE: dict[type, tuple[tuple[dataclasses.Field, t.Any], ...]] = {}
+
+
+def _validation_plan(model: type) -> tuple[tuple[dataclasses.Field, t.Any], ...]:
+    plan = _VALIDATION_PLAN_CACHE.get(model)
+    if plan is not None:
+        return plan
+    hints = t.get_type_hints(model)
+    plan = tuple((field, hints.get(field.name, field.type)) for field in dataclasses.fields(model))
+    _VALIDATION_PLAN_CACHE[model] = plan
+    return plan
+
+
 def _validate_value(value: t.Any, typ: t.Any, field: str, errors: list[dict[str, str]]) -> t.Any:
     origin, args = t.get_origin(typ), t.get_args(typ)
     if origin in (t.Union, types.UnionType) and type(None) in args:
@@ -422,16 +435,15 @@ def _validate_dataclass(model: type, value: t.Any, errors: list[dict[str, str]] 
         if prefix:
             return value
         raise ValidationError(errors)
-    hints = t.get_type_hints(model)
     result: dict[str, t.Any] = {}
-    for field in dataclasses.fields(model):
+    for field, field_type in _validation_plan(model):
         name = f"{prefix}.{field.name}" if prefix else field.name
         if field.name not in value:
             if field.default is not dataclasses.MISSING or field.default_factory is not dataclasses.MISSING:
                 continue
             errors.append({"field": name, "message": "Field is required"})
             continue
-        result[field.name] = _validate_value(value[field.name], hints.get(field.name, field.type), name, errors)
+        result[field.name] = _validate_value(value[field.name], field_type, name, errors)
     if not prefix and errors:
         raise ValidationError(errors)
     if prefix and len(errors) > error_count:
@@ -1714,6 +1726,7 @@ class FileResponse(Response):
         h.setdefault("content-type", _guess_content_type(path))
         h.setdefault("etag", etag)
         h.setdefault("last-modified", _http_date(mtime))
+        h.setdefault("accept-ranges", "bytes")
         if download_name:
             h.setdefault("content-disposition", f'attachment; filename="{download_name}"')
         if cache_seconds is not None:
@@ -1736,6 +1749,44 @@ class FileResponse(Response):
                         super().__init__(body=b"", status=304, headers=h)
                         self.headers.pop("content-length", None)
                         return
+
+        range_header = req.header("range") if req is not None and status == 200 else None
+        if range_header and range_header.startswith("bytes=") and "," not in range_header:
+            if_range = req.header("if-range") if req is not None else None
+            use_range = True
+            if if_range:
+                parsed_if_range = _parse_http_date(if_range)
+                if parsed_if_range is not None:
+                    use_range = mtime.replace(microsecond=0) <= parsed_if_range.astimezone(_dt.timezone.utc).replace(microsecond=0)
+                else:
+                    use_range = if_range.strip() == etag
+            if use_range:
+                spec = range_header[6:].strip()
+                try:
+                    start_text, end_text = spec.split("-", 1)
+                    if not start_text:
+                        length = int(end_text)
+                        if length <= 0:
+                            raise ValueError
+                        start = max(0, st.st_size - length)
+                        end = st.st_size - 1
+                    else:
+                        start = int(start_text)
+                        end = int(end_text) if end_text else st.st_size - 1
+                    if start < 0 or start >= st.st_size or end < start:
+                        raise ValueError
+                    end = min(end, st.st_size - 1)
+                except (ValueError, TypeError):
+                    h["content-range"] = f"bytes */{st.st_size}"
+                    super().__init__(body=b"", status=416, headers=h)
+                    return
+                length = end - start + 1
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    data = f.read(length)
+                h["content-range"] = f"bytes {start}-{end}/{st.st_size}"
+                super().__init__(body=data, status=206, headers=h)
+                return
 
         with open(path, "rb") as f:
             data = f.read()
@@ -1836,6 +1887,8 @@ class FileHandler:
     def response(self, req: Request | None = None) -> FileResponse:
         req = req or self.req
         use_gzip, level = self._gzip_settings(req)
+        if req is not None and req.header("range"):
+            use_gzip = False
         if not use_gzip:
             return FileResponse(
                 self.path,
