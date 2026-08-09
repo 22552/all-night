@@ -8,6 +8,7 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-24.04
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,40 +26,29 @@ jobs:
           from night import Night
           night_app = Night()
           @night_app.get('/')
-          def night_home():
-              return {'message': 'hello'}
+          def night_home(): return {'message': 'hello'}
           @night_app.get('/users/<int:id>')
-          def night_user(id: int):
-              return {'id': id}
+          def night_user(id: int): return {'id': id}
 
           from fastapi import FastAPI
           fastapi_app = FastAPI()
           @fastapi_app.get('/')
-          async def fastapi_home():
-              return {'message': 'hello'}
+          async def fastapi_home(): return {'message': 'hello'}
           @fastapi_app.get('/users/{id}')
-          async def fastapi_user(id: int):
-              return {'id': id}
+          async def fastapi_user(id: int): return {'id': id}
 
           from starlette.applications import Starlette
           from starlette.responses import JSONResponse
           from starlette.routing import Route
-          async def starlette_home(request):
-              return JSONResponse({'message': 'hello'})
-          async def starlette_user(request):
-              return JSONResponse({'id': int(request.path_params['id'])})
-          starlette_app = Starlette(routes=[
-              Route('/', starlette_home),
-              Route('/users/{id:int}', starlette_user),
-          ])
+          async def starlette_home(request): return JSONResponse({'message': 'hello'})
+          async def starlette_user(request): return JSONResponse({'id': int(request.path_params['id'])})
+          starlette_app = Starlette(routes=[Route('/', starlette_home), Route('/users/{id:int}', starlette_user)])
 
           import falcon.asgi
           class FalconHome:
-              async def on_get(self, req, resp):
-                  resp.media = {'message': 'hello'}
+              async def on_get(self, req, resp): resp.media = {'message': 'hello'}
           class FalconUser:
-              async def on_get(self, req, resp, id):
-                  resp.media = {'id': int(id)}
+              async def on_get(self, req, resp, id): resp.media = {'id': int(id)}
           falcon_app = falcon.asgi.App()
           falcon_app.add_route('/', FalconHome())
           falcon_app.add_route('/users/{id:int}', FalconUser())
@@ -67,52 +57,54 @@ jobs:
           from blacksheep.server.responses import json as bs_json
           blacksheep_app = Application()
           @blacksheep_app.router.get('/')
-          async def blacksheep_home():
-              return bs_json({'message': 'hello'})
+          async def blacksheep_home(): return bs_json({'message': 'hello'})
           @blacksheep_app.router.get('/users/{id}')
-          async def blacksheep_user(id: int):
-              return bs_json({'id': id})
+          async def blacksheep_user(id: int): return bs_json({'id': id})
           PY
 
           cat > bench_robyn_app.py <<'PY'
           from robyn import Robyn
           app = Robyn(__file__)
           @app.get('/')
-          async def home(request):
-              return {'message': 'hello'}
+          async def home(request): return {'message': 'hello'}
           @app.get('/users/:id')
-          async def user(request, id):
-              return {'id': int(id)}
-          if __name__ == '__main__':
-              app.start(host='127.0.0.1', port=8006)
+          async def user(request, id): return {'id': int(id)}
+          if __name__ == '__main__': app.start(host='127.0.0.1', port=8006)
           PY
       - name: Run oha benchmark
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           mkdir -p bench-results
-
           start_uvicorn() {
             app="$1"; port="$2"
             python -m uvicorn "$app" --host 127.0.0.1 --port "$port" --workers 1 --log-level warning >"bench-results/server-${port}.log" 2>&1 &
             SERVER_PID=$!
             for i in $(seq 1 100); do
-              if curl -fsS "http://127.0.0.1:${port}/" >/dev/null 2>&1; then return 0; fi
+              curl -fsS "http://127.0.0.1:${port}/" >/dev/null 2>&1 && return 0
               sleep 0.1
             done
-            cat "bench-results/server-${port}.log"
+            echo "SERVER_START_FAILED $app"
+            cat "bench-results/server-${port}.log" || true
             return 1
           }
-
+          stop_server() {
+            pid="$1"
+            kill "$pid" 2>/dev/null || true
+            sleep 0.2
+            kill -9 "$pid" 2>/dev/null || true
+          }
           run_case() {
             name="$1"; port="$2"; path="$3"; label="$4"
             echo "===== ${name} ${label} ====="
             for round in 1 2 3 4; do
               echo "--- round ${round} ---"
-              oha --no-tui -n 4000 -c 50 "http://127.0.0.1:${port}${path}" | tee "bench-results/${name}-${label}-${round}.txt"
+              timeout 15s oha --no-tui -n 4000 -c 50 "http://127.0.0.1:${port}${path}" >"bench-results/${name}-${label}-${round}.txt" 2>&1
+              rc=$?
+              cat "bench-results/${name}-${label}-${round}.txt"
+              [ "$rc" -eq 0 ] || echo "OHA_EXIT=$rc ${name} ${label} round=${round}"
             done
           }
-
           for spec in \
             'Night bench_http_apps:night_app 8001' \
             'BlackSheep bench_http_apps:blacksheep_app 8002' \
@@ -122,42 +114,45 @@ jobs:
           do
             set -- $spec
             name="$1"; app="$2"; port="$3"
-            start_uvicorn "$app" "$port"
-            run_case "$name" "$port" '/' static
-            run_case "$name" "$port" '/users/42' dynamic
-            kill "$SERVER_PID" || true
-            wait "$SERVER_PID" 2>/dev/null || true
+            if start_uvicorn "$app" "$port"; then
+              run_case "$name" "$port" '/' static
+              run_case "$name" "$port" '/users/42' dynamic
+              stop_server "$SERVER_PID"
+            fi
           done
-
           python bench_robyn_app.py --processes 1 --workers 1 --log-level WARNING >bench-results/server-8006.log 2>&1 &
           SERVER_PID=$!
+          ready=0
           for i in $(seq 1 100); do
-            if curl -fsS http://127.0.0.1:8006/ >/dev/null 2>&1; then break; fi
+            if curl -fsS http://127.0.0.1:8006/ >/dev/null 2>&1; then ready=1; break; fi
             sleep 0.1
           done
-          run_case Robyn 8006 '/' static
-          run_case Robyn 8006 '/users/42' dynamic
-          kill "$SERVER_PID" || true
-          wait "$SERVER_PID" 2>/dev/null || true
+          if [ "$ready" -eq 1 ]; then
+            run_case Robyn 8006 '/' static
+            run_case Robyn 8006 '/users/42' dynamic
+          else
+            echo ROBYN_START_FAILED
+            cat bench-results/server-8006.log || true
+          fi
+          stop_server "$SERVER_PID"
 
           python - <<'PY'
           from pathlib import Path
           import re, statistics
-          rows=[]
+          print('\n===== MEDIANS =====')
           for name in ['Night','BlackSheep','Starlette','Falcon','FastAPI','Robyn']:
               for label in ['static','dynamic']:
                   rps=[]; avg=[]
                   for p in sorted(Path('bench-results').glob(f'{name}-{label}-*.txt')):
-                      text=p.read_text()
+                      text=p.read_text(errors='replace')
                       m=re.search(r'Requests/sec:\s*([0-9.]+)', text)
                       a=re.search(r'Average:\s*([0-9.]+) secs', text)
                       if m: rps.append(float(m.group(1)))
                       if a: avg.append(float(a.group(1))*1000)
                   if rps:
-                      rows.append((name,label,statistics.median(rps),statistics.median(avg) if avg else float('nan'),rps))
-          print('\n===== MEDIANS =====')
-          for name,label,rps,avg,rounds in rows:
-              print(f'{name:11s} {label:7s} {rps:10.1f} req/s  avg={avg:7.3f} ms  rounds={rounds}')
+                      print(f'{name:11s} {label:7s} {statistics.median(rps):10.1f} req/s  avg={statistics.median(avg) if avg else float("nan"):7.3f} ms  rounds={rps}')
+                  else:
+                      print(f'{name:11s} {label:7s} NO_RESULT')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
