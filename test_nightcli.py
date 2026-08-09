@@ -32,6 +32,11 @@ class NightCLITests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("GET                  /health", output)
 
+            code, output = self.run_cli("openapi", "--project", str(root))
+            self.assertEqual(code, 0)
+            self.assertIn("Wrote OpenAPI document", output)
+            self.assertIn('"openapi"', (root / "openapi.json").read_text(encoding="utf-8"))
+
             code, output = self.run_cli("info", "--project", str(root))
             self.assertEqual(code, 0)
             self.assertIn("Template:      api", output)
