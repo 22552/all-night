@@ -18,9 +18,10 @@ class DevToolsTests(unittest.TestCase):
         self.assertEqual(blueprint.name, "night_devtools")
 
         client = TestClient(app)
-        page = client.get("/__night__/")
+        page = client.get("/__night__")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Night DevTools", page.text)
+        self.assertEqual(client.get("/__night__/").status_code, 200)
 
         routes = client.get("/__night__/api/routes").get_json()
         self.assertTrue(any(item["path"] == "/hello" for item in routes["routes"]))
