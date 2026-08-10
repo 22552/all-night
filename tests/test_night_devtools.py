@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from night import Night, TestClient
+from night import Night, TestClient as NightTestClient
 from night_devtools import enable_devtools
 
 
@@ -22,7 +22,7 @@ class DevToolsTests(unittest.TestCase):
         blueprint = enable_devtools(app)
         self.assertEqual(blueprint.name, "night_devtools")
 
-        client = TestClient(app)
+        client = NightTestClient(app)
         page = client.get("/__night__")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Night DevTools", page.text)
@@ -51,7 +51,7 @@ class DevToolsTests(unittest.TestCase):
             return "hello"
 
         enable_devtools(app)
-        client = TestClient(app)
+        client = NightTestClient(app)
 
         self.assertEqual(client.get("/hello").status_code, 200)
         self.assertEqual(client.get("/missing").status_code, 404)
@@ -73,7 +73,7 @@ class DevToolsTests(unittest.TestCase):
             raise RuntimeError("kaboom")
 
         enable_devtools(app)
-        client = TestClient(app)
+        client = NightTestClient(app)
         response = client.get(
             "/boom?mode=test",
             headers={"authorization": "Bearer secret", "x-api-key": "abc", "x-visible": "yes"},
@@ -94,7 +94,7 @@ class DevToolsTests(unittest.TestCase):
     def test_request_detail_returns_404_when_trace_expired(self):
         app = Night(debug=True)
         enable_devtools(app, request_history=1)
-        client = TestClient(app)
+        client = NightTestClient(app)
         self.assertEqual(client.get("/__night__/api/requests/999").status_code, 404)
 
     def test_request_history_is_bounded(self):
@@ -105,7 +105,7 @@ class DevToolsTests(unittest.TestCase):
             return {"value": value}
 
         enable_devtools(app, request_history=2)
-        client = TestClient(app)
+        client = NightTestClient(app)
         client.get("/1")
         client.get("/2")
         client.get("/3")
@@ -141,7 +141,7 @@ class DevToolsTests(unittest.TestCase):
         self.assertEqual(trace["close_code"], 1008)
         self.assertGreaterEqual(trace["duration_ms"], 0)
 
-        client = TestClient(app)
+        client = NightTestClient(app)
         payload = client.get("/__night__/api/websockets").get_json()
         self.assertEqual(payload["active"], [])
         self.assertEqual(payload["recent"][0]["path"], "/no-websocket-route")
