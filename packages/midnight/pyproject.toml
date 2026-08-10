@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "all-night-midnight"
-version = "0.1.8"
+version = "0.1.9"
 description = "Midnight live HTML bridge for the All-Night Python framework"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "22552"}]
-dependencies = ["all-night==0.1.7"]
+dependencies = ["all-night==0.1.8"]
 
 [project.urls]
 Homepage = "https://github.com/22552/all-night"
