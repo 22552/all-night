@@ -26,8 +26,8 @@ _SENSITIVE_HEADERS = {
 }
 _MAX_TRACEBACK_CHARS = 16_000
 
-# Request records deliberately use plain tuples. The HTTP hot path only creates
-# one tuple and appends it to a bounded deque; decoding and JSON-shaped dict
+# Request records deliberately use plain tuples. The request hot path only
+# creates one tuple and appends it to a bounded deque; decoding and JSON-shaped
 # allocation happen later in the DevTools transport/API path.
 _R_ID = 0
 _R_TIMESTAMP_NS = 1
@@ -256,9 +256,11 @@ def devtools_blueprint(app: t.Any) -> Blueprint:
 def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__", request_history: int = 100, websocket_history: int = 50) -> Blueprint:
     """Mount the debug-only inspector with bounded in-memory traces.
 
-    The HTTP hot path stores a compact raw tuple. Header/query decoding and
-    JSON-shaped allocation are deferred to the live WebSocket/API consumer.
-    Bodies are never stored.
+    The request tracer wraps Night's dispatch function directly instead of
+    installing a middleware. That avoids Night's generic middleware-chain
+    closure allocation when DevTools is the only middleware. Header/query
+    decoding and JSON-shaped allocation remain deferred. Bodies are never
+    stored.
     """
     if not bool(getattr(app, "debug", False)):
         raise RuntimeError("Night DevTools requires Night(debug=True).")
@@ -280,15 +282,17 @@ def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__", request_histo
     app._night_devtools_ws_recent = collections.deque(maxlen=int(websocket_history))
     app._night_devtools_ws_ids = itertools.count(1)
 
-    async def _request_trace(req, call_next):
-        path = req.path
-        if path == root_path or path.startswith(root_path + "/"):
-            return await call_next()
+    original_dispatch = app._dispatch
+
+    async def _traced_dispatch(req, path=None, method=None):
+        trace_path = req.path if path is None else path
+        if trace_path == root_path or trace_path.startswith(root_path + "/"):
+            return await original_dispatch(req, path, method)
         started_ns = time.perf_counter_ns()
         status = 500
         error: dict[str, str] | None = None
         try:
-            response = await call_next()
+            response = await original_dispatch(req, path, method)
             status = int(response.status)
             return response
         except Exception as exc:
@@ -302,7 +306,7 @@ def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__", request_histo
                 next(app._night_devtools_request_ids),
                 time.time_ns(),
                 scope.get("method") or req.method,
-                scope.get("path") or path,
+                scope.get("path") or trace_path,
                 status,
                 time.perf_counter_ns() - started_ns,
                 scope.get("query_string", b""),
@@ -315,7 +319,7 @@ def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__", request_histo
             app._night_devtools_requests.append(record)
             _enqueue_live(app, ("request", record))
 
-    app.use(_request_trace)
+    app._dispatch = _traced_dispatch
 
     original_websocket_handler = app._handle_websocket
 
