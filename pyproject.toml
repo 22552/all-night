@@ -36,4 +36,4 @@ night = "night:cli"
 nightcli = "nightcli:main"
 
 [tool.setuptools]
-py-modules = ["night", "nightcli", "night_mcp", "night_web", "night_request_info", "night_cloudflare"]
+py-modules = ["night", "nightcli", "night_mcp", "night_web", "night_request_info", "night_cloudflare", "night_devtools"]
