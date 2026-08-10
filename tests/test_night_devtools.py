@@ -28,6 +28,7 @@ class DevToolsTests(unittest.TestCase):
         self.assertIn("Night DevTools", page.text)
         self.assertIn("Recent requests", page.text)
         self.assertIn("WebSockets", page.text)
+        self.assertIn("WebSocket push", page.text)
         self.assertEqual(client.get("/__night__/").status_code, 200)
 
         routes = client.get("/__night__/api/routes").get_json()
@@ -39,7 +40,7 @@ class DevToolsTests(unittest.TestCase):
         summary = client.get("/__night__/api/summary").get_json()
         self.assertTrue(summary["debug"])
         self.assertGreaterEqual(summary["routes"], 7)
-        self.assertGreaterEqual(summary["middlewares"], 1)
+        self.assertEqual(summary["middlewares"], 0)
         self.assertIn("fast", summary)
         self.assertEqual(summary["websocket_active"], 0)
 
@@ -113,6 +114,26 @@ class DevToolsTests(unittest.TestCase):
         history = client.get("/__night__/api/requests").get_json()["requests"]
         self.assertEqual(len(history), 2)
         self.assertEqual([item["path"] for item in history], ["/3", "/2"])
+
+    def test_existing_user_middleware_is_preserved(self):
+        app = Night(debug=True)
+        calls = []
+
+        async def middleware(req, call_next):
+            calls.append(req.path)
+            return await call_next()
+
+        app.use(middleware)
+
+        @app.get("/hello")
+        def hello():
+            return "hello"
+
+        enable_devtools(app)
+        client = NightTestClient(app)
+        self.assertEqual(client.get("/hello").status_code, 200)
+        self.assertEqual(calls, ["/hello"])
+        self.assertEqual(client.get("/__night__/api/summary").get_json()["middlewares"], 1)
 
     def test_websocket_transport_trace_records_closed_connection(self):
         app = Night(debug=True)
