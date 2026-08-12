@@ -1,0 +1,79 @@
+name: Apply regex router optimization
+
+on:
+  push:
+    branches:
+      - agent/regex-router-index
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/regex-router-index
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply routing optimization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('night.py')
+          text = path.read_text()
+          marker = 'self._complex_prefix_index: dict[str, dict[str, list[Route]]] = {}'
+
+          if marker not in text:
+              old = '''        self._dynamic_prefix_index: dict[str, dict[str, list[Route]]] = {}\n        self._dynamic_terminal_index: dict[str, dict[str, Route]] = {}\n'''
+              new = '''        self._dynamic_prefix_index: dict[str, dict[str, list[Route]]] = {}\n        self._dynamic_terminal_index: dict[str, dict[str, Route]] = {}\n        # Complex dynamic routes are bucketed by their first static path\n        # segment. Each bucket preserves registration order and also contains\n        # dynamic-first (root) routes, so matching stays compatible while\n        # avoiding regex work for unrelated route groups.\n        self._complex_prefix_index: dict[str, dict[str, list[Route]]] = {}\n'''
+              assert old in text, 'Night __init__ index block changed'
+              text = text.replace(old, new, 1)
+
+              old = '''        self._dynamic_prefix_index.clear()\n        self._dynamic_terminal_index.clear()\n        self._static_method_index.clear()\n'''
+              new = '''        self._dynamic_prefix_index.clear()\n        self._dynamic_terminal_index.clear()\n        self._complex_prefix_index.clear()\n        self._static_method_index.clear()\n'''
+              assert old in text, 'mount index reset block changed'
+              text = text.replace(old, new, 1)
+
+              old = '''                if route._night_simple_dynamic is not None:\n                    prefix, suffix, _name, _converter = route._night_simple_dynamic\n                    self._dynamic_prefix_index.setdefault(method, {}).setdefault(prefix, []).append(route)\n                    if not suffix and prefix.endswith("/"):\n                        base = prefix[:-1] or "/"\n                        self._dynamic_terminal_index.setdefault(method, {})[base] = route\n'''
+              new = '''                if route._night_simple_dynamic is not None:\n                    prefix, suffix, _name, _converter = route._night_simple_dynamic\n                    self._dynamic_prefix_index.setdefault(method, {}).setdefault(prefix, []).append(route)\n                    if not suffix and prefix.endswith("/"):\n                        base = prefix[:-1] or "/"\n                        self._dynamic_terminal_index.setdefault(method, {})[base] = route\n                else:\n                    # Complex routes still need regex, but only routes sharing\n                    # the first static path segment can normally match. Root\n                    # routes are copied into every bucket at registration time\n                    # to preserve the original route ordering exactly.\n                    literal = key.split("<", 1)[0]\n                    slash = literal.find("/", 1)\n                    bucket = literal[:slash + 1] if slash >= 0 else "/"\n                    index = self._complex_prefix_index.setdefault(method, {})\n                    root_routes = index.setdefault("/", [])\n                    if bucket == "/":\n                        root_routes.append(route)\n                        for bucket_name, bucket_routes in index.items():\n                            if bucket_name != "/":\n                                bucket_routes.append(route)\n                    else:\n                        bucket_routes = index.get(bucket)\n                        if bucket_routes is None:\n                            bucket_routes = list(root_routes)\n                            index[bucket] = bucket_routes\n                        bucket_routes.append(route)\n'''
+              assert old in text, 'dynamic registration block changed'
+              text = text.replace(old, new, 1)
+
+              old = '''            # Generic fallback only for complex/multi-parameter routes.\n            if routes:\n                for route in routes:\n                    if route._night_simple_dynamic is not None:\n                        continue\n                    match = route.pattern.match(path)\n                    if match is None:\n                        continue\n                    values = match.groups()\n                    params = dict(zip(route.param_names, values))\n                    plan = route._night_plan\n                    for name in plan.int_params:\n                        value = params.get(name)\n                        if value is not None and type(value) is not int:\n                            try:\n                                params[name] = int(value)\n                            except (TypeError, ValueError):\n                                pass\n                    return route, params\n'''
+              new = '''            # Generic fallback only for complex/multi-parameter routes.\n            # Bucket by the first path segment so unrelated route groups never\n            # pay a regex match. Registration order inside the bucket is the\n            # same as the original global dynamic-route order.\n            if routes:\n                index = self._complex_prefix_index.get(method)\n                if index:\n                    slash = key.find("/", 1)\n                    bucket = key[:slash + 1] if slash >= 0 else "/"\n                    candidates = index.get(bucket, index.get("/", ()))\n                else:\n                    candidates = ()\n                for route in candidates:\n                    match = route.pattern.match(path)\n                    if match is None:\n                        continue\n                    values = match.groups()\n                    params = dict(zip(route.param_names, values))\n                    plan = route._night_plan\n                    for name in plan.int_params:\n                        value = params.get(name)\n                        if value is not None and type(value) is not int:\n                            try:\n                                params[name] = int(value)\n                            except (TypeError, ValueError):\n                                pass\n                    return route, params\n'''
+              assert old in text, 'complex fallback block changed'
+              text = text.replace(old, new, 1)
+
+              path.write_text(text)
+
+          tests = Path('tests/test_fast_paths.py')
+          test_text = tests.read_text()
+          test_marker = 'test_complex_dynamic_routes_skip_unrelated_regex_buckets'
+          if test_marker not in test_text:
+              test_text += '''\n\ndef test_complex_dynamic_routes_skip_unrelated_regex_buckets():\n    app = Night()\n    endpoints = []\n\n    for index in range(80):\n        def endpoint(a, b, _index=index):\n            return str(_index)\n        app.get(f"/group{index}/<a>/<b>", endpoint)\n        endpoints.append(endpoint)\n\n    target_route = next(\n        route for route in app.routes\n        if route.raw_path == "/group79/<a>/<b>"\n    )\n\n    class BombPattern:\n        def match(self, _path):\n            raise AssertionError("unrelated complex regex was evaluated")\n\n    for route in app.routes:\n        if route is not target_route and route.raw_path.startswith("/group"):\n            route.pattern = BombPattern()\n\n    route, params = app._match_method("/group79/one/two", "GET")\n    assert route is target_route\n    assert params == {"a": "one", "b": "two"}\n    assert app._complex_prefix_index["GET"]["/group79/"] == [target_route]\n\n\ndef test_complex_dynamic_bucket_preserves_root_route_order():\n    app = Night()\n\n    @app.get("/<path:anything>")\n    def catch_all(anything):\n        return anything\n\n    @app.get("/api/<left>/<right>")\n    def specific(left, right):\n        return left + right\n\n    route, params = app._match_method("/api/one/two", "GET")\n    assert route.endpoint is catch_all\n    assert params == {"anything": "api/one/two"}\n\n\ndef test_mount_rebuilds_complex_dynamic_index():\n    from night import Router\n\n    child = Router()\n\n    @child.get("/items/<left>/<right>")\n    def item(left, right):\n        return left + right\n\n    app = Night()\n    app.mount("/api", child)\n\n    route, params = app._match_method("/api/items/a/b", "GET")\n    assert route.endpoint is item\n    assert params == {"left": "a", "right": "b"}\n    assert route in app._complex_prefix_index["GET"]["/api/"]\n'''
+              tests.write_text(test_text)
+          PY
+
+      - name: Run routing tests
+        run: |
+          python -m pip install -U pytest
+          python -m pytest tests/test_fast_paths.py -q
+
+      - name: Commit optimized router
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add night.py tests/test_fast_paths.py
+          git commit -m 'speed up complex regex routing'
+          git push origin HEAD:agent/regex-router-index
