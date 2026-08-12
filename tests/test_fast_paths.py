@@ -128,3 +128,66 @@ def test_mount_rebuilds_fast_index():
     route, params = app._match_method("/api/ping", "GET")
     assert route.endpoint is ping
     assert params == {}
+
+
+def test_complex_dynamic_routes_skip_unrelated_regex_buckets():
+    app = Night()
+    endpoints = []
+
+    for index in range(80):
+        def endpoint(a, b, _index=index):
+            return str(_index)
+        app.get(f"/group{index}/<a>/<b>", endpoint)
+        endpoints.append(endpoint)
+
+    target_route = next(
+        route for route in app.routes
+        if route.raw_path == "/group79/<a>/<b>"
+    )
+
+    class BombPattern:
+        def match(self, _path):
+            raise AssertionError("unrelated complex regex was evaluated")
+
+    for route in app.routes:
+        if route is not target_route and route.raw_path.startswith("/group"):
+            route.pattern = BombPattern()
+
+    route, params = app._match_method("/group79/one/two", "GET")
+    assert route is target_route
+    assert params == {"a": "one", "b": "two"}
+    assert app._complex_prefix_index["GET"]["/group79/"] == [target_route]
+
+
+def test_complex_dynamic_bucket_preserves_root_route_order():
+    app = Night()
+
+    @app.get("/<path:anything>")
+    def catch_all(anything):
+        return anything
+
+    @app.get("/api/<left>/<right>")
+    def specific(left, right):
+        return left + right
+
+    route, params = app._match_method("/api/one/two", "GET")
+    assert route.endpoint is catch_all
+    assert params == {"anything": "api/one/two"}
+
+
+def test_mount_rebuilds_complex_dynamic_index():
+    from night import Router
+
+    child = Router()
+
+    @child.get("/items/<left>/<right>")
+    def item(left, right):
+        return left + right
+
+    app = Night()
+    app.mount("/api", child)
+
+    route, params = app._match_method("/api/items/a/b", "GET")
+    assert route.endpoint is item
+    assert params == {"left": "a", "right": "b"}
+    assert route in app._complex_prefix_index["GET"]["/api/"]
