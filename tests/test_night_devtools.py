@@ -28,7 +28,8 @@ class DevToolsTests(unittest.TestCase):
         self.assertIn("Night DevTools", page.text)
         self.assertIn("Recent requests", page.text)
         self.assertIn("WebSockets", page.text)
-        self.assertIn("WebSocket push", page.text)
+        self.assertIn("SSE push", page.text)
+        self.assertIn("EventSource", page.text)
         self.assertEqual(client.get("/__night__/").status_code, 200)
 
         routes = client.get("/__night__/api/routes").get_json()
