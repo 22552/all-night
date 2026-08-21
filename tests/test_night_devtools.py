@@ -28,7 +28,8 @@ class DevToolsTests(unittest.TestCase):
         self.assertIn("Night DevTools", page.text)
         self.assertIn("Recent requests", page.text)
         self.assertIn("WebSockets", page.text)
-        self.assertIn("WebSocket push", page.text)
+        self.assertIn("SSE push", page.text)
+        self.assertIn("EventSource", page.text)
         self.assertEqual(client.get("/__night__/").status_code, 200)
 
         routes = client.get("/__night__/api/routes").get_json()
@@ -43,6 +44,23 @@ class DevToolsTests(unittest.TestCase):
         self.assertEqual(summary["middlewares"], 0)
         self.assertIn("fast", summary)
         self.assertEqual(summary["websocket_active"], 0)
+
+    def test_events_endpoint_streams_sse_snapshot(self):
+        app = Night(debug=True)
+        blueprint = enable_devtools(app)
+        endpoint = next(route.endpoint for route in blueprint.routes if route.raw_path == "/events")
+
+        async def read_snapshot():
+            response = await endpoint()
+            chunk = await anext(response._body_iter)
+            await response._body_iter.aclose()
+            return response, chunk
+
+        response, chunk = asyncio.run(read_snapshot())
+        self.assertEqual(response.headers["content-type"], "text/event-stream")
+        self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertIn('data: {"type":"snapshot"', chunk)
+        self.assertEqual(app._night_devtools_live_queues, set())
 
     def test_request_history_records_status_latency_and_errors(self):
         app = Night(debug=True)
