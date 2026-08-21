@@ -50,41 +50,16 @@ class DevToolsTests(unittest.TestCase):
         blueprint = enable_devtools(app)
         endpoint = next(route.endpoint for route in blueprint.routes if route.raw_path == "/events")
 
-        async def collect_first_chunk():
+        async def read_snapshot():
             response = await endpoint()
-            sent = []
-            first_chunk = asyncio.Event()
+            chunk = await anext(response._body_iter)
+            await response._body_iter.aclose()
+            return response, chunk
 
-            async def receive():
-                await asyncio.Event().wait()
-
-            async def send(event):
-                sent.append(event)
-                if event["type"] == "http.response.body" and event.get("body"):
-                    first_chunk.set()
-
-            task = asyncio.create_task(
-                response(
-                    {"type": "http", "method": "GET", "path": "/__night__/events", "headers": []},
-                    receive,
-                    send,
-                )
-            )
-            await asyncio.wait_for(first_chunk.wait(), timeout=0.5)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            return sent
-
-        sent = asyncio.run(collect_first_chunk())
-        start = next(event for event in sent if event["type"] == "http.response.start")
-        headers = {key.decode(): value.decode() for key, value in start["headers"]}
-        body = b"".join(event.get("body", b"") for event in sent if event["type"] == "http.response.body")
-        self.assertEqual(headers["content-type"], "text/event-stream")
-        self.assertEqual(headers["cache-control"], "no-cache")
-        self.assertIn(b'data: {"type":"snapshot"', body)
+        response, chunk = asyncio.run(read_snapshot())
+        self.assertEqual(response.headers["content-type"], "text/event-stream")
+        self.assertEqual(response.headers["cache-control"], "no-cache")
+        self.assertIn('data: {"type":"snapshot"', chunk)
         self.assertEqual(app._night_devtools_live_queues, set())
 
     def test_request_history_records_status_latency_and_errors(self):
