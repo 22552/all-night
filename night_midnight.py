@@ -1,6 +1,6 @@
 """Midnight public runtime with execution-mode extensions.
 
-The original runtime stays in ``_night_midnight_core``.  This module keeps its
+The original runtime stays in ``_night_midnight_core``. This module keeps its
 public API and adds four explicit execution modes:
 
 - ``server``: always execute the handler in Python on the server/runtime.
@@ -15,9 +15,29 @@ from __future__ import annotations
 import functools
 import inspect
 import secrets
+import sys
+import types
 import typing as t
 
-import _night_midnight_core as _core
+try:
+    import _night_midnight_core as _core
+except ModuleNotFoundError:
+    # Browser Night source mode historically writes only night_midnight.py into
+    # /night. Installed wheels already contain the core module, so this path is
+    # only used by Pyodide's source loader.
+    try:
+        from pyodide.http import open_url  # type: ignore
+    except ImportError:
+        raise
+    source = open_url(
+        "https://raw.githubusercontent.com/22552/all-night/main/_night_midnight_core.py"
+    ).read()
+    module = types.ModuleType("_night_midnight_core")
+    module.__file__ = "/night/_night_midnight_core.py"
+    sys.modules["_night_midnight_core"] = module
+    exec(compile(source, module.__file__, "exec"), module.__dict__)
+    _core = module
+
 from _night_midnight_core import *
 
 
@@ -79,9 +99,6 @@ class CompiledMidnight(_core.CompiledMidnight):
 
             @functools.wraps(func)
             def wrapper(event: t.Any = None, *args: t.Any, **kwargs: t.Any):
-                # Static handlers have already been installed client-side.  A
-                # server event may still arrive for another handler sharing the
-                # same event/selector pair, so do not execute this one twice.
                 return None
 
             wrapper.__midnight_compile_spec__ = spec
@@ -95,8 +112,8 @@ class CompiledMidnight(_core.CompiledMidnight):
 
         Browser Night already owns the application's Python runtime in the
         parent page, so FullCompile installs only a compact handler manifest in
-        the DOM runtime.  Matching events are routed back to that local Pyodide
-        instance without a server/network round trip.  Clients that do not
+        the DOM runtime. Matching events are routed back to that local Pyodide
+        instance without a server/network round trip. Clients that do not
         understand the manifest keep sending ordinary events, which execute
         the original Python handler as a fallback.
         """
@@ -239,8 +256,6 @@ class CompiledMidnight(_core.CompiledMidnight):
             _core.Midnight._push(self, op, **payload)
 
     def subscriptions_json(self) -> str:
-        # Browser Night asks for subscriptions after importing the app. Queue
-        # Static/FullCompile manifests at that point, when registration is done.
         self._queue_initial_programs()
         return super().subscriptions_json()
 
