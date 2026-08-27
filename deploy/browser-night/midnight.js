@@ -7,9 +7,15 @@
     socketReconnectTimers: new Map(),
     socketReconnectAttempts: new Map(),
     persistence: new Map(),
+    compiled: new Map(),
+    fullCompiled: new Map(),
+    pendingCompiledEvents: new Map(),
+    localCompiledEvents: 0,
+    localFullCompiledEvents: 0,
   };
 
   const post = (type, event) => parent.postMessage({ type, event }, "*");
+  const compiledKey = (eventName, selector) => `${eventName}\u0000${selector ?? ""}`;
 
   function targetInfo(element) {
     if (!(element instanceof Element)) return {};
@@ -68,6 +74,150 @@
     return payload;
   }
 
+  function propertyName(name) {
+    if (name === "text") return "textContent";
+    if (name === "html") return "innerHTML";
+    return String(name);
+  }
+
+  function readDom(selector, property) {
+    const element = document.querySelector(selector);
+    return element ? element[propertyName(property)] : null;
+  }
+
+  function setDom(selector, property, value) {
+    for (const element of document.querySelectorAll(selector)) {
+      const key = propertyName(property);
+      if (key in element) element[key] = value ?? "";
+      else if (value == null) element.removeAttribute(key);
+      else element.setAttribute(key, String(value));
+    }
+  }
+
+  function resolvePath(value, path) {
+    let current = value;
+    for (const part of path || []) current = current?.[part];
+    return current;
+  }
+
+  function resolveJsRef(path) {
+    let parentObject = null;
+    let value = globalThis;
+    for (const part of path || []) {
+      parentObject = value;
+      value = value?.[part];
+    }
+    return { parent: parentObject, value };
+  }
+
+  async function evalClient(node, sourceEvent = null) {
+    if (!node || typeof node !== "object") return null;
+    switch (node.kind) {
+      case "literal": return node.value;
+      case "dom": return readDom(node.selector, node.property);
+      case "event": return resolvePath(sourceEvent, node.path);
+      case "event_get": {
+        const value = resolvePath(sourceEvent, node.path);
+        return value == null ? node.default : value;
+      }
+      case "js_ref": return resolveJsRef(node.path).value;
+      case "call": {
+        const args = [];
+        for (const arg of node.args || []) args.push(await evalClient(arg, sourceEvent));
+        if (node.callee?.kind === "js_ref") {
+          const ref = resolveJsRef(node.callee.path);
+          if (typeof ref.value !== "function") {
+            throw new TypeError(`${node.callee.path.join(".")} is not callable`);
+          }
+          return await ref.value.apply(ref.parent, args);
+        }
+        const fn = await evalClient(node.callee, sourceEvent);
+        if (typeof fn !== "function") throw new TypeError("client expression is not callable");
+        return await fn(...args);
+      }
+      case "binary": {
+        const left = await evalClient(node.left, sourceEvent);
+        const right = await evalClient(node.right, sourceEvent);
+        switch (node.op) {
+          case "add": return left + right;
+          case "sub": return left - right;
+          case "mul": return left * right;
+          case "div": return left / right;
+          case "mod": return left % right;
+          case "pow": return left ** right;
+          default: throw new Error(`unknown client operation: ${node.op}`);
+        }
+      }
+      default: throw new Error(`unknown client expression node: ${node.kind}`);
+    }
+  }
+
+  async function runProgram(program, sourceEvent = null) {
+    for (const instruction of program || []) {
+      if (instruction.op === "dom_set_expr") {
+        setDom(
+          instruction.selector,
+          instruction.property,
+          await evalClient(instruction.expr, sourceEvent),
+        );
+      } else if (instruction.op === "dom_set") {
+        setDom(instruction.selector, instruction.property, instruction.value);
+      } else {
+        throw new Error(`unknown compiled Midnight instruction: ${instruction.op}`);
+      }
+    }
+  }
+
+  function programsFor(eventName, selector) {
+    const bucket = state.compiled.get(compiledKey(eventName, selector));
+    return bucket ? [...bucket.values()] : [];
+  }
+
+  function fullProgramsFor(eventName, selector) {
+    const bucket = state.fullCompiled.get(compiledKey(eventName, selector));
+    return bucket ? [...bucket.values()] : [];
+  }
+
+  function installCompiled(command) {
+    const key = compiledKey(command.event, command.selector);
+    let bucket = state.compiled.get(key);
+    if (!bucket) {
+      bucket = new Map();
+      state.compiled.set(key, bucket);
+    }
+    bucket.set(String(command.handler_id), command);
+  }
+
+  function installFullCompiled(command) {
+    const key = compiledKey(command.event, command.selector);
+    let bucket = state.fullCompiled.get(key);
+    if (!bucket) {
+      bucket = new Map();
+      state.fullCompiled.set(key, bucket);
+    }
+    bucket.set(String(command.handler_id), command);
+  }
+
+  function rememberPendingCompiledEvent(eventName, selector, payload) {
+    const key = compiledKey(eventName, selector);
+    let queue = state.pendingCompiledEvents.get(key);
+    if (!queue) {
+      queue = [];
+      state.pendingCompiledEvents.set(key, queue);
+    }
+    queue.push(payload);
+    if (queue.length > 8) queue.splice(0, queue.length - 8);
+  }
+
+  function takePendingCompiledEvent(eventName, selector) {
+    const key = compiledKey(eventName, selector);
+    const queue = state.pendingCompiledEvents.get(key);
+    if (!queue?.length) return null;
+    const payload = queue.shift();
+    if (!queue.length) state.pendingCompiledEvents.delete(key);
+    return payload;
+  }
+
   function clearDomListeners() {
     for (const [eventName, handler] of state.listeners) {
       document.removeEventListener(eventName, handler, true);
@@ -89,7 +239,48 @@
             : event.target;
           if (selector && !matched) continue;
           if (item.prevent_default) event.preventDefault();
-          post("midnight-event", serializeEvent(event, selector, matched));
+
+          const payload = serializeEvent(event, selector, matched);
+          const compiledPrograms = programsFor(eventName, selector);
+          const fullPrograms = fullProgramsFor(eventName, selector);
+          const localHandlerIds = [];
+
+          if (compiledPrograms.length) {
+            state.localCompiledEvents += 1;
+            localHandlerIds.push(...compiledPrograms.map(program => String(program.handler_id)));
+            void Promise.all(
+              compiledPrograms.map(program => runProgram(program.program, payload)),
+            ).catch(error => {
+              window.dispatchEvent(new CustomEvent("midnight:error", { detail: { error: String(error) } }));
+            });
+          }
+
+          if (fullPrograms.length) {
+            state.localFullCompiledEvents += 1;
+            for (const program of fullPrograms) {
+              localHandlerIds.push(String(program.handler_id));
+              post("midnight-event", {
+                type: "custom:__full_compile",
+                selector: null,
+                detail: {
+                  handler_id: String(program.handler_id),
+                  event: payload,
+                },
+              });
+            }
+          }
+
+          if (localHandlerIds.length) {
+            payload.__midnight_local_handlers = localHandlerIds;
+          }
+
+          const localPrograms = [...compiledPrograms, ...fullPrograms];
+          if (localPrograms.length && localPrograms.every(program => Boolean(program.exclusive))) {
+            continue;
+          }
+
+          rememberPendingCompiledEvent(eventName, selector, payload);
+          post("midnight-event", payload);
         }
       };
       state.listeners.set(eventName, handler);
@@ -343,6 +534,27 @@
           }
         }
         break;
+      case "dom_set":
+        setDom(command.selector, command.property, command.value);
+        break;
+      case "hybrid_client_set":
+        void evalClient(command.expr).then(value => {
+          setDom(command.selector, command.property, value);
+        });
+        break;
+      case "compiled_install": {
+        installCompiled(command);
+        if (command.execute_now) {
+          const sourceEvent = takePendingCompiledEvent(command.event, command.selector);
+          void runProgram(command.program, sourceEvent).catch(error => {
+            window.dispatchEvent(new CustomEvent("midnight:error", { detail: { error: String(error) } }));
+          });
+        }
+        break;
+      }
+      case "full_compiled_install":
+        installFullCompiled(command);
+        break;
       case "persist":
         registerPersist(command);
         break;
@@ -388,6 +600,14 @@
     cancelPersist,
     flushPersist(key = null) {
       return flushPersist({ key });
+    },
+    stats() {
+      return {
+        compiledPrograms: [...state.compiled.values()].reduce((n, bucket) => n + bucket.size, 0),
+        fullCompiledPrograms: [...state.fullCompiled.values()].reduce((n, bucket) => n + bucket.size, 0),
+        localCompiledEvents: state.localCompiledEvents,
+        localFullCompiledEvents: state.localFullCompiledEvents,
+      };
     },
   });
 
