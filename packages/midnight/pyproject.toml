@@ -17,7 +17,7 @@ Documentation = "https://github.com/22552/all-night/tree/main/docs/guides/midnig
 Repository = "https://github.com/22552/all-night"
 
 [tool.setuptools]
-py-modules = ["night_midnight", "night_midnight_scope", "night_midnight_component", "night_midnight_dev", "night_midnight_form"]
+py-modules = ["night_midnight", "_night_midnight_core", "night_midnight_scope", "night_midnight_component", "night_midnight_dev", "night_midnight_form"]
 package-dir = {"" = "../.."}
 
 [tool.setuptools.data-files]
