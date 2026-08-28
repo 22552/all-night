@@ -2268,6 +2268,11 @@ class Night(Router):
         self._dynamic_method_routes: dict[str, list[Route]] = {}
         self._dynamic_prefix_index: dict[str, dict[str, list[Route]]] = {}
         self._dynamic_terminal_index: dict[str, dict[str, Route]] = {}
+        # Complex dynamic routes are bucketed by their first static path
+        # segment. Each bucket preserves registration order and also contains
+        # dynamic-first (root) routes, so matching stays compatible while
+        # avoiding regex work for unrelated route groups.
+        self._complex_prefix_index: dict[str, dict[str, list[Route]]] = {}
         self._static_method_index: dict[str, dict[str, Route]] = {}
         self._static_methods_by_path: dict[str, set[str]] = {}
         self._endpoint_plans: dict[t.Callable, _EndpointPlan] = {}
@@ -2616,6 +2621,27 @@ class Night(Router):
                     if not suffix and prefix.endswith("/"):
                         base = prefix[:-1] or "/"
                         self._dynamic_terminal_index.setdefault(method, {})[base] = route
+                else:
+                    # Complex routes still need regex, but only routes sharing
+                    # the first static path segment can normally match. Root
+                    # routes are copied into every bucket at registration time
+                    # to preserve the original route ordering exactly.
+                    literal = key.split("<", 1)[0]
+                    slash = literal.find("/", 1)
+                    bucket = literal[:slash + 1] if slash >= 0 else "/"
+                    index = self._complex_prefix_index.setdefault(method, {})
+                    root_routes = index.setdefault("/", [])
+                    if bucket == "/":
+                        root_routes.append(route)
+                        for bucket_name, bucket_routes in index.items():
+                            if bucket_name != "/":
+                                bucket_routes.append(route)
+                    else:
+                        bucket_routes = index.get(bucket)
+                        if bucket_routes is None:
+                            bucket_routes = list(root_routes)
+                            index[bucket] = bucket_routes
+                        bucket_routes.append(route)
             self._classify_route_call(route, plan)
             route._night_invoke = self._compile_route_invoker(route, plan)
             return
@@ -3027,6 +3053,7 @@ class Night(Router):
         self._dynamic_method_routes.clear()
         self._dynamic_prefix_index.clear()
         self._dynamic_terminal_index.clear()
+        self._complex_prefix_index.clear()
         self._static_method_index.clear()
         self._static_methods_by_path.clear()
         self._endpoint_plans.clear()
@@ -3111,10 +3138,18 @@ class Night(Router):
                 return prefixed
 
             # Generic fallback only for complex/multi-parameter routes.
+            # Bucket by the first path segment so unrelated route groups never
+            # pay a regex match. Registration order inside the bucket is the
+            # same as the original global dynamic-route order.
             if routes:
-                for route in routes:
-                    if route._night_simple_dynamic is not None:
-                        continue
+                index = self._complex_prefix_index.get(method)
+                if index:
+                    slash = key.find("/", 1)
+                    bucket = key[:slash + 1] if slash >= 0 else "/"
+                    candidates = index.get(bucket, index.get("/", ()))
+                else:
+                    candidates = ()
+                for route in candidates:
                     match = route.pattern.match(path)
                     if match is None:
                         continue
