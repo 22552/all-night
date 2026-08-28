@@ -6,13 +6,14 @@ import asyncio
 import collections
 import datetime as dt
 import itertools
+import json
 import platform
 import time
 import traceback
 import typing as t
 import urllib.parse
 
-from night import Blueprint, html as html_response, jsonify, request
+from night import Blueprint, html as html_response, jsonify, request, sse
 
 __all__ = ["devtools_blueprint", "enable_devtools"]
 
@@ -199,7 +200,7 @@ def _enqueue_live(app: t.Any, event: tuple[str, t.Any]) -> None:
 _DASHBOARD = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Night DevTools</title><style>
 :root{color-scheme:dark;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0d1017;color:#dce4f2}*{box-sizing:border-box}body{margin:0;background:#0d1017;color:#dce4f2}header{padding:20px 28px;background:#151b27;border-bottom:1px solid #28344b;position:sticky;top:0;z-index:2}h1{font-size:21px;margin:0 0 5px}.muted{color:#9aabc6}.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#8ee6bd;margin-right:7px}.live.off{background:#ffb4ab}main{padding:24px;max-width:1200px;margin:auto}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;margin:18px 0 28px}.card,.panel{background:#151b27;border:1px solid #28344b;border-radius:10px}.card{padding:14px}.label{color:#9aabc6;font-size:12px}.value{font-size:18px;margin-top:6px}.panel{overflow:hidden;margin-bottom:22px}.panel-head{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:13px 15px;border-bottom:1px solid #28344b}.panel-head h2{font-size:16px;margin:0}.panel-head input{width:min(360px,55vw);background:#0d1017;border:1px solid #34435f;border-radius:7px;padding:8px 10px;color:#dce4f2}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #28344b;font-size:13px}th{color:#9aabc6;font-size:11px;text-transform:uppercase}tr:last-child td{border-bottom:0}tbody tr:hover{background:#192131}tbody tr.clickable{cursor:pointer}code{color:#8ee6bd}.method{color:#9fc9ff;font-weight:600}.ok,.ws-active{color:#8ee6bd}.warn{color:#ffd68a}.bad,.error{color:#ffb4ab}.latency{font-variant-numeric:tabular-nums}.empty{text-align:center;color:#7f90ad;padding:20px}.pill{display:inline-block;padding:2px 7px;border-radius:999px;background:#202b3d;color:#b8c8e4;font-size:11px}.drawer{position:fixed;top:0;right:0;width:min(620px,100vw);height:100vh;background:#111722;border-left:1px solid #34435f;z-index:10;transform:translateX(101%);transition:transform .16s;box-shadow:-18px 0 40px #0007;overflow:auto}.drawer.open{transform:translateX(0)}.drawer-head{position:sticky;top:0;background:#151b27;border-bottom:1px solid #28344b;padding:14px 16px;display:flex;justify-content:space-between;align-items:center}.drawer-head h2{font-size:16px;margin:0}.drawer button{background:#202b3d;border:1px solid #34435f;color:#dce4f2;border-radius:6px;padding:6px 10px}.drawer-body{padding:16px}.detail-grid{display:grid;grid-template-columns:130px 1fr;gap:8px 12px;margin-bottom:18px}.detail-grid .key,.section-title{color:#9aabc6}.drawer pre{background:#0b0f16;border:1px solid #28344b;border-radius:8px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.section-title{font-size:12px;text-transform:uppercase;margin:18px 0 8px}@media(max-width:700px){main{padding:14px}.panel{overflow:auto}th,td{white-space:nowrap}header{padding:16px}.detail-grid{grid-template-columns:95px 1fr}}
 </style></head><body><header><h1>Night DevTools</h1><div class="muted"><span class="live off" id="live-dot"></span><span id="live-text">connecting…</span></div></header><main><section class="cards" id="summary"></section>
-<section class="panel"><div class="panel-head"><h2>Recent requests</h2><span class="muted">WebSocket push · click for details</span></div><table><thead><tr><th>Method</th><th>Path</th><th>Status</th><th>Latency</th><th>Time</th><th>Error</th></tr></thead><tbody id="requests"><tr><td colspan="6" class="empty">Waiting for live stream…</td></tr></tbody></table></section>
+<section class="panel"><div class="panel-head"><h2>Recent requests</h2><span class="muted">SSE push · click for details</span></div><table><thead><tr><th>Method</th><th>Path</th><th>Status</th><th>Latency</th><th>Time</th><th>Error</th></tr></thead><tbody id="requests"><tr><td colspan="6" class="empty">Waiting for live stream…</td></tr></tbody></table></section>
 <section class="panel"><div class="panel-head"><h2>WebSockets</h2><span class="muted">active + recently closed</span></div><table><thead><tr><th>State</th><th>Path</th><th>Client</th><th>Duration</th><th>Close</th></tr></thead><tbody id="websockets"><tr><td colspan="5" class="empty">Waiting for live stream…</td></tr></tbody></table></section>
 <section class="panel"><div class="panel-head"><h2>Routes</h2><input id="route-filter" type="search" placeholder="Filter routes…"></div><table><thead><tr><th>Methods</th><th>Path</th><th>Name</th><th>Endpoint</th><th>Params</th></tr></thead><tbody id="routes"></tbody></table></section></main>
 <aside class="drawer" id="drawer"><div class="drawer-head"><h2 id="drawer-title">Request</h2><button id="drawer-close">Close</button></div><div class="drawer-body" id="drawer-body"></div></aside><script>
@@ -210,9 +211,19 @@ function requests(){const rows=requestRows;document.querySelector('#requests').i
 function websockets(){const rows=[...(wsData.active||[]).map(x=>({...x,state:'active'})),...(wsData.recent||[]).slice(0,20).map(x=>({...x,state:'closed'}))];document.querySelector('#websockets').innerHTML=rows.length?rows.map(x=>`<tr><td class="${x.state==='active'?'ws-active':'muted'}">${x.state}</td><td><code>${esc(x.path)}</code></td><td>${esc(x.client||'—')}</td><td>${x.duration_ms==null?'open':Number(x.duration_ms).toFixed(1)+' ms'}</td><td>${esc(x.close_code==null?'—':x.close_code)}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">No WebSocket connections yet</td></tr>'}
 function block(v){return '<pre>'+esc(JSON.stringify(v==null?{}:v,null,2))+'</pre>'}function detail(id){api('api/requests/'+encodeURIComponent(id)).then(x=>{document.querySelector('#drawer-title').textContent=x.method+' '+x.path;let b=`<div class="detail-grid"><div class="key">Status</div><div class="${sc(x.status)}">${x.status}</div><div class="key">Latency</div><div>${Number(x.duration_ms).toFixed(3)} ms</div><div class="key">Time</div><div>${esc(x.time)}</div><div class="key">Client</div><div>${esc(x.client||'—')}</div><div class="key">Scheme</div><div>${esc(x.scheme||'—')}</div><div class="key">HTTP</div><div>${esc(x.http_version||'—')}</div></div><div class="section-title">Query</div>${block(x.query)}<div class="section-title">Headers</div>${block(x.headers)}`;if(x.error)b+=`<div class="section-title bad">Exception</div><div class="bad">${esc(x.error.type+': '+x.error.message)}</div><pre>${esc(x.error.traceback||'')}</pre>`;document.querySelector('#drawer-body').innerHTML=b;document.querySelector('#drawer').classList.add('open')})}
 function apply(m){if(m.type==='snapshot'){summaryData=m.summary||{};allRoutes=m.routes||[];requestRows=m.requests||[];wsData=m.websockets||{active:[],recent:[]};requestLimit=m.request_limit||100;summary();routes();requests();websockets();return}if(m.type==='request'){requestRows.unshift(m.request);if(requestRows.length>requestLimit)requestRows.length=requestLimit;summaryData.requests=m.count;requests();summary();return}if(m.type==='websockets'){wsData=m.websockets||{active:[],recent:[]};summaryData.websocket_active=(wsData.active||[]).length;websockets();summary()}}
-function connect(){const dot=document.querySelector('#live-dot'),text=document.querySelector('#live-text'),proto=location.protocol==='https:'?'wss:':'ws:';const sock=new WebSocket(proto+'//'+location.host+base+'live');sock.onopen=()=>{dot.classList.remove('off');text.textContent='live WebSocket'};sock.onmessage=e=>{try{apply(JSON.parse(e.data))}catch(_){}};sock.onclose=()=>{dot.classList.add('off');text.textContent='reconnecting…';setTimeout(connect,750)};sock.onerror=()=>sock.close()}
+function connect(){const dot=document.querySelector('#live-dot'),text=document.querySelector('#live-text'),stream=new EventSource(base+'events');stream.onopen=()=>{dot.classList.remove('off');text.textContent='live SSE'};stream.onmessage=e=>{try{apply(JSON.parse(e.data))}catch(_){}};stream.onerror=()=>{dot.classList.add('off');text.textContent='reconnecting…'}}
 document.querySelector('#drawer-close').onclick=()=>document.querySelector('#drawer').classList.remove('open');document.querySelector('#route-filter').oninput=routes;connect();
 </script></body></html>"""
+
+
+def _live_message(app: t.Any, kind: str, payload: t.Any) -> dict[str, t.Any]:
+    if kind == "request":
+        return {
+            "type": "request",
+            "request": _public_request(payload, details=False),
+            "count": len(app._night_devtools_requests),
+        }
+    return {"type": "websockets", "websockets": _websocket_data(app)}
 
 
 def devtools_blueprint(app: t.Any) -> Blueprint:
@@ -249,6 +260,22 @@ def devtools_blueprint(app: t.Any) -> Blueprint:
     def request_info():
         req = request()
         return jsonify({"method": req.method, "path": req.path, "query": req.query, "client": req.client, "headers": _safe_headers(dict(req.headers))})
+
+    @tools.get("/events", name="night_devtools.events")
+    async def events():
+        queue: asyncio.Queue[tuple[str, t.Any]] = asyncio.Queue(maxsize=256)
+        app._night_devtools_live_queues.add(queue)
+
+        async def stream():
+            try:
+                yield {"data": json.dumps(_snapshot(app), separators=(",", ":"))}
+                while True:
+                    kind, payload = await queue.get()
+                    yield {"data": json.dumps(_live_message(app, kind, payload), separators=(",", ":"))}
+            finally:
+                app._night_devtools_live_queues.discard(queue)
+
+        return sse(stream())
 
     return tools
 
@@ -389,15 +416,7 @@ def enable_devtools(app: t.Any, *, url_prefix: str = "/__night__", request_histo
                     receive_task = asyncio.create_task(ws.receive_text())
                 if queue_task in done:
                     kind, payload = queue_task.result()
-                    if kind == "request":
-                        message = {
-                            "type": "request",
-                            "request": _public_request(payload, details=False),
-                            "count": len(app._night_devtools_requests),
-                        }
-                    else:
-                        message = {"type": "websockets", "websockets": _websocket_data(app)}
-                    await ws.send_json(message)
+                    await ws.send_json(_live_message(app, kind, payload))
                     queue_task = asyncio.create_task(queue.get())
         finally:
             receive_task.cancel()
